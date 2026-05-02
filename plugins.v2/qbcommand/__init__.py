@@ -28,7 +28,7 @@ class QbCommand(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/main/icons/qb_tr.png"
     # 插件版本
-    plugin_version = "2.3"
+    plugin_version = "2.4"
     # 插件作者
     plugin_author = "DzAvril"
     # 作者主页
@@ -48,6 +48,8 @@ class QbCommand(_PluginBase):
     _notify: bool = False
     _pause_cron = None
     _resume_cron = None
+    _limit_cron = None
+    _unlimit_cron = None
     _only_pause_once = False
     _only_resume_once = False
     _only_pause_upload = False
@@ -77,6 +79,8 @@ class QbCommand(_PluginBase):
             self._notify = config.get("notify")
             self._pause_cron = config.get("pause_cron")
             self._resume_cron = config.get("resume_cron")
+            self._limit_cron = config.get("limit_cron")
+            self._unlimit_cron = config.get("unlimit_cron")
             self._only_pause_once = config.get("onlypauseonce")
             self._only_resume_once = config.get("onlyresumeonce")
             self._only_pause_upload = config.get("onlypauseupload")
@@ -131,6 +135,8 @@ class QbCommand(_PluginBase):
                     "downloaders": self._downloaders,
                     "pause_cron": self._pause_cron,
                     "resume_cron": self._resume_cron,
+                    "limit_cron": self._limit_cron,
+                    "unlimit_cron": self._unlimit_cron,
                     "op_site_ids": self._op_site_ids,
                     "exclude_dirs": self._exclude_dirs,
                     "upload_limit": self._upload_limit,
@@ -198,6 +204,8 @@ class QbCommand(_PluginBase):
                     "downloaders": self._downloaders,
                     "pause_cron": self._pause_cron,
                     "resume_cron": self._resume_cron,
+                    "limit_cron": self._limit_cron,
+                    "unlimit_cron": self._unlimit_cron,
                     "op_site_ids": self._op_site_ids,
                     "exclude_dirs": self._exclude_dirs,
                     "upload_limit": self._upload_limit,
@@ -210,9 +218,11 @@ class QbCommand(_PluginBase):
                 self._scheduler.print_jobs()
                 self._scheduler.start()
 
-        # 在初始化时设置限速，添加异常处理
+        # 在初始化时设置限速，添加异常处理。配置了限速周期时交给定时任务执行，
+        # 避免插件启动/保存配置后立即限速，破坏“指定时间段限速”的语义。
         try:
-            self.set_limit(self._upload_limit, self._download_limit)
+            if not self._limit_cron:
+                self.set_limit(self._upload_limit, self._download_limit)
         except Exception as e:
             logger.error(f"初始化时设置限速失败: {str(e)}")
 
@@ -363,25 +373,12 @@ class QbCommand(_PluginBase):
             "kwargs": {} # 定时器参数
         }]
         """
-        if self._enabled and self._pause_cron and self._resume_cron:
-            return [
-                {
-                    "id": "DownloaderPause",
-                    "name": "暂停下载器所有任务",
-                    "trigger": CronTrigger.from_crontab(self._pause_cron),
-                    "func": self.pause_torrent,
-                    "kwargs": {},
-                },
-                {
-                    "id": "DownloaderResume",
-                    "name": "开始下载器所有任务",
-                    "trigger": CronTrigger.from_crontab(self._resume_cron),
-                    "func": self.resume_torrent,
-                    "kwargs": {},
-                },
-            ]
-        if self._enabled and self._pause_cron:
-            return [
+        if not self._enabled:
+            return []
+
+        services = []
+        if self._pause_cron:
+            services.append(
                 {
                     "id": "DownloaderPause",
                     "name": "暂停下载器所有任务",
@@ -389,9 +386,9 @@ class QbCommand(_PluginBase):
                     "func": self.pause_torrent,
                     "kwargs": {},
                 }
-            ]
-        if self._enabled and self._resume_cron:
-            return [
+            )
+        if self._resume_cron:
+            services.append(
                 {
                     "id": "DownloaderResume",
                     "name": "开始下载器所有任务",
@@ -399,8 +396,28 @@ class QbCommand(_PluginBase):
                     "func": self.resume_torrent,
                     "kwargs": {},
                 }
-            ]
-        return []
+            )
+        if self._limit_cron:
+            services.append(
+                {
+                    "id": "DownloaderLimit",
+                    "name": "设置下载器限速",
+                    "trigger": CronTrigger.from_crontab(self._limit_cron),
+                    "func": self.apply_speed_limit,
+                    "kwargs": {},
+                }
+            )
+        if self._unlimit_cron:
+            services.append(
+                {
+                    "id": "DownloaderUnlimit",
+                    "name": "取消下载器限速",
+                    "trigger": CronTrigger.from_crontab(self._unlimit_cron),
+                    "func": self.clear_speed_limit,
+                    "kwargs": {},
+                }
+            )
+        return services
 
     def get_all_torrents(self, service):
         downloader_name = service.name
@@ -1309,6 +1326,20 @@ class QbCommand(_PluginBase):
             logger.error(f"获取下载器 {downloader_name or '所有'} 限速状态失败: {str(e)}")
             return None, None if downloader_name else {}
 
+    def apply_speed_limit(self):
+        """按定时任务应用配置的下载器限速。"""
+        if not self._enabled:
+            return True
+        logger.info("执行定时限速任务")
+        return self.set_limit(self._upload_limit, self._download_limit)
+
+    def clear_speed_limit(self):
+        """按定时任务取消下载器限速。"""
+        if not self._enabled:
+            return True
+        logger.info("执行定时取消限速任务")
+        return self.set_limit(0, 0)
+
     def set_limit(self, upload_limit, download_limit):
         # 简化限速逻辑：0表示不限速，正数表示限速值(KB/s)
 
@@ -1614,6 +1645,43 @@ class QbCommand(_PluginBase):
                                                 ],
                                             },
                                         ],
+                                    },
+                                    {
+                                        "component": "VRow",
+                                        "content": [
+                                            {
+                                                "component": "VCol",
+                                                "props": {"cols": 12, "md": 6},
+                                                "content": [
+                                                    {
+                                                        "component": "VTextField",
+                                                        "props": {
+                                                            "model": "limit_cron",
+                                                            "label": "限速开始周期",
+                                                            "placeholder": "0 18 * * *",
+                                                            "hint": "到点应用下方上传/下载限速；留空则保存配置时立即应用限速",
+                                                            "persistent-hint": True,
+                                                        },
+                                                    }
+                                                ],
+                                            },
+                                            {
+                                                "component": "VCol",
+                                                "props": {"cols": 12, "md": 6},
+                                                "content": [
+                                                    {
+                                                        "component": "VTextField",
+                                                        "props": {
+                                                            "model": "unlimit_cron",
+                                                            "label": "限速取消周期",
+                                                            "placeholder": "0 8 * * *",
+                                                            "hint": "到点将上传/下载限速都恢复为0（不限速）",
+                                                            "persistent-hint": True,
+                                                        },
+                                                    }
+                                                ],
+                                            },
+                                        ],
                                     }
                                 ]
                             }
@@ -1652,7 +1720,7 @@ class QbCommand(_PluginBase):
                                                             "label": "上传限速",
                                                             "placeholder": "0",
                                                             "suffix": "KB/s",
-                                                            "hint": "0表示不限速，设置后立即生效",
+                                                            "hint": "0表示不限速；配置限速开始周期后按周期应用，否则保存后立即生效",
                                                             "persistent-hint": True,
                                                             "type": "number",
                                                         },
@@ -1670,7 +1738,7 @@ class QbCommand(_PluginBase):
                                                             "label": "下载限速",
                                                             "placeholder": "0",
                                                             "suffix": "KB/s",
-                                                            "hint": "0表示不限速，设置后立即生效",
+                                                            "hint": "0表示不限速；配置限速开始周期后按周期应用，否则保存后立即生效",
                                                             "persistent-hint": True,
                                                             "type": "number",
                                                         },
@@ -1941,6 +2009,11 @@ class QbCommand(_PluginBase):
             "onlypauseupload": False,
             "onlypausedownload": False,
             "onlypausechecking": False,
+            "downloaders": [],
+            "pause_cron": "",
+            "resume_cron": "",
+            "limit_cron": "",
+            "unlimit_cron": "",
             "upload_limit": 0,
             "download_limit": 0,
             "op_site_ids": [],
