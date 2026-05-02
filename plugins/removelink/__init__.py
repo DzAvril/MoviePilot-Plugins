@@ -1,5 +1,6 @@
 import os
 import platform
+import shutil
 import threading
 import time
 import traceback
@@ -196,7 +197,7 @@ class RemoveLink(_PluginBase):
     # 插件图标
     plugin_icon = "Ombi_A.png"
     # 插件版本
-    plugin_version = "2.6"
+    plugin_version = "2.7"
     # 插件作者
     plugin_author = "DzAvril"
     # 作者主页
@@ -236,6 +237,11 @@ class RemoveLink(_PluginBase):
         ".sbv",
         ".csf-bk",
         ".csf-tmp",
+    ]
+
+    # 刮削/媒体服务器生成的关联目录后缀
+    SCRAP_DIR_SUFFIXES = [
+        ".trickplay",
     ]
 
     # preivate property
@@ -932,14 +938,13 @@ class RemoveLink(_PluginBase):
         """
         检查path目录是否只包含刮削文件
         """
-        # 检查path下是否有目录
-        for dir_path in os.listdir(path):
-            if os.path.isdir(os.path.join(path, dir_path)):
-                return False
-
-        # 检查path下是否有非刮削文件
+        # 检查path下是否有非刮削文件或非刮削目录
         for file in path.iterdir():
-            if not file.suffix.lower() in RemoveLink.SCRAP_EXTENSIONS:
+            if file.is_dir():
+                if file.suffix.lower() not in RemoveLink.SCRAP_DIR_SUFFIXES:
+                    return False
+                continue
+            if file.suffix.lower() not in RemoveLink.SCRAP_EXTENSIONS:
                 return False
         return True
 
@@ -957,10 +962,12 @@ class RemoveLink(_PluginBase):
                 # 清理与path相关的刮削文件
                 name_prefix = path.stem
                 for file in path.parent.iterdir():
-                    if (
-                        file.name.startswith(name_prefix)
-                        and file.suffix.lower() in self.SCRAP_EXTENSIONS
-                    ):
+                    if not file.name.startswith(name_prefix):
+                        continue
+                    if file.is_dir() and file.suffix.lower() in self.SCRAP_DIR_SUFFIXES:
+                        shutil.rmtree(file)
+                        logger.info(f"删除刮削目录：{file}")
+                    elif file.suffix.lower() in self.SCRAP_EXTENSIONS:
                         file.unlink()
                         logger.info(f"删除刮削文件：{file}")
         except Exception as e:
@@ -1002,8 +1009,12 @@ class RemoveLink(_PluginBase):
                 if self.scrape_files_left(parent_path):
                     # 清除目录下所有文件
                     for file in parent_path.iterdir():
-                        file.unlink()
-                        logger.info(f"删除刮削文件：{file}")
+                        if file.is_dir():
+                            shutil.rmtree(file)
+                            logger.info(f"删除刮削目录：{file}")
+                        else:
+                            file.unlink()
+                            logger.info(f"删除刮削文件：{file}")
             except Exception as e:
                 logger.error(f"清理刮削文件发生错误：{str(e)}.")
 
