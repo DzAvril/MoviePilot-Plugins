@@ -197,7 +197,7 @@ class RemoveLink(_PluginBase):
     # 插件图标
     plugin_icon = "Ombi_A.png"
     # 插件版本
-    plugin_version = "2.7"
+    plugin_version = "2.8"
     # 插件作者
     plugin_author = "DzAvril"
     # 作者主页
@@ -257,6 +257,8 @@ class RemoveLink(_PluginBase):
     _delay_seconds = 30
     _monitor_strm_deletion = False
     strm_path_mappings = ""
+    custom_scrap_extensions = ""
+    _custom_scrap_extensions = []
     _transferhistory = None
     _storagechain = None
     _observer = []
@@ -308,6 +310,10 @@ class RemoveLink(_PluginBase):
             self._delayed_deletion = config.get("delayed_deletion", True)
             self._monitor_strm_deletion = config.get("monitor_strm_deletion", False)
             self.strm_path_mappings = config.get("strm_path_mappings") or ""
+            self.custom_scrap_extensions = config.get("custom_scrap_extensions") or ""
+            self._custom_scrap_extensions = self._parse_custom_scrap_extensions(
+                self.custom_scrap_extensions
+            )
             # 验证延迟时间范围，允许用户设置较长的延迟时间（最长 24 小时）
             delay_seconds = config.get("delay_seconds", 30)
             try:
@@ -680,6 +686,29 @@ class RemoveLink(_PluginBase):
                                 "props": {"cols": 12},
                                 "content": [
                                     {
+                                        "component": "VTextarea",
+                                        "props": {
+                                            "model": "custom_scrap_extensions",
+                                            "label": "自定义刮削文件后缀",
+                                            "rows": 3,
+                                            "placeholder": "每行或逗号分隔一个后缀，例如：.txt\n.json\n-mediainfo.json",
+                                            "hint": "开启清理刮削文件后生效，会与内置 .nfo/.jpg/.srt 等后缀一起联动清理",
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    # 硬链接配置说明
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
                                         "component": "VAlert",
                                         "props": {
                                             "type": "warning",
@@ -874,6 +903,7 @@ class RemoveLink(_PluginBase):
             "monitor_dirs": "",
             "exclude_dirs": "",
             "exclude_keywords": "",
+            "custom_scrap_extensions": "",
             "monitor_strm_deletion": False,
             "strm_path_mappings": "",
         }
@@ -934,17 +964,51 @@ class RemoveLink(_PluginBase):
         return False
 
     @staticmethod
-    def scrape_files_left(path):
+    def _parse_custom_scrap_extensions(custom_extensions: str) -> List[str]:
+        """
+        解析用户自定义刮削文件后缀，支持换行、逗号和中文逗号分隔。
+        """
+        if not custom_extensions:
+            return []
+        extensions = []
+        for item in custom_extensions.replace("，", ",").replace("\n", ",").split(","):
+            extension = item.strip().lower()
+            if not extension:
+                continue
+            if not extension.startswith(".") and not extension.startswith("-"):
+                extension = f".{extension}"
+            if extension not in extensions:
+                extensions.append(extension)
+        return extensions
+
+    def _scrap_extensions(self) -> List[str]:
+        """
+        返回内置和用户自定义刮削文件后缀。
+        """
+        extensions = list(self.SCRAP_EXTENSIONS)
+        for extension in self._custom_scrap_extensions:
+            if extension not in extensions:
+                extensions.append(extension)
+        return extensions
+
+    def _is_scrap_file(self, path: Path) -> bool:
+        """
+        判断文件是否属于可联动清理的刮削文件。
+        """
+        name = path.name.lower()
+        return any(name.endswith(extension) for extension in self._scrap_extensions())
+
+    def scrape_files_left(self, path):
         """
         检查path目录是否只包含刮削文件
         """
         # 检查path下是否有非刮削文件或非刮削目录
         for file in path.iterdir():
             if file.is_dir():
-                if file.suffix.lower() not in RemoveLink.SCRAP_DIR_SUFFIXES:
+                if file.suffix.lower() not in self.SCRAP_DIR_SUFFIXES:
                     return False
                 continue
-            if file.suffix.lower() not in RemoveLink.SCRAP_EXTENSIONS:
+            if not self._is_scrap_file(file):
                 return False
         return True
 
@@ -958,7 +1022,7 @@ class RemoveLink(_PluginBase):
         if not os.path.exists(path.parent):
             return
         try:
-            if not path.suffix.lower() in self.SCRAP_EXTENSIONS:
+            if not self._is_scrap_file(path):
                 # 清理与path相关的刮削文件
                 name_prefix = path.stem
                 for file in path.parent.iterdir():
@@ -967,7 +1031,7 @@ class RemoveLink(_PluginBase):
                     if file.is_dir() and file.suffix.lower() in self.SCRAP_DIR_SUFFIXES:
                         shutil.rmtree(file)
                         logger.info(f"删除刮削目录：{file}")
-                    elif file.suffix.lower() in self.SCRAP_EXTENSIONS:
+                    elif self._is_scrap_file(file):
                         file.unlink()
                         logger.info(f"删除刮削文件：{file}")
         except Exception as e:
@@ -1070,7 +1134,7 @@ class RemoveLink(_PluginBase):
             self.delete_scrap_infos(task.file_path)
             if self._delete_torrents:
                 # 只有非刮削文件才发送 DownloadFileDeleted 事件
-                if task.file_path.suffix.lower() not in self.SCRAP_EXTENSIONS:
+                if not self._is_scrap_file(task.file_path):
                     eventmanager.send_event(
                         EventType.DownloadFileDeleted, {"src": str(task.file_path)}
                     )
@@ -1097,7 +1161,7 @@ class RemoveLink(_PluginBase):
                         self.delete_scrap_infos(file)
                         if self._delete_torrents:
                             # 只有非刮削文件才发送 DownloadFileDeleted 事件
-                            if file.suffix.lower() not in self.SCRAP_EXTENSIONS:
+                            if not self._is_scrap_file(file):
                                 eventmanager.send_event(
                                     EventType.DownloadFileDeleted, {"src": str(file)}
                                 )
@@ -1264,7 +1328,7 @@ class RemoveLink(_PluginBase):
                 self.delete_scrap_infos(file_path)
                 if self._delete_torrents:
                     # 只有非刮削文件才发送 DownloadFileDeleted 事件
-                    if file_path.suffix.lower() not in self.SCRAP_EXTENSIONS:
+                    if not self._is_scrap_file(file_path):
                         eventmanager.send_event(
                             EventType.DownloadFileDeleted, {"src": str(file_path)}
                         )
@@ -1288,7 +1352,7 @@ class RemoveLink(_PluginBase):
                             self.delete_scrap_infos(file)
                             if self._delete_torrents:
                                 # 只有非刮削文件才发送 DownloadFileDeleted 事件
-                                if file.suffix.lower() not in self.SCRAP_EXTENSIONS:
+                                if not self._is_scrap_file(file):
                                     eventmanager.send_event(
                                         EventType.DownloadFileDeleted,
                                         {"src": str(file)},
@@ -1474,7 +1538,7 @@ class RemoveLink(_PluginBase):
                     # 检查是否为相关的刮削文件
                     if (
                         file_stem.startswith(base_name)
-                        and file_ext in self.SCRAP_EXTENSIONS
+                        and self._is_scrap_file(Path(file_item.name))
                     ) or (
                         file_item.name.lower()
                         in [
@@ -1555,8 +1619,7 @@ class RemoveLink(_PluginBase):
                     only_scrap_files = True
                     for file_item in files:
                         if file_item.type == "file":
-                            file_ext = Path(file_item.name).suffix.lower()
-                            if file_ext not in self.SCRAP_EXTENSIONS:
+                            if not self._is_scrap_file(Path(file_item.name)):
                                 only_scrap_files = False
                                 break
                         else:
