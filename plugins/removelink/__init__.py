@@ -302,11 +302,12 @@ class RemoveLink(_PluginBase):
             self._delayed_deletion = config.get("delayed_deletion", True)
             self._monitor_strm_deletion = config.get("monitor_strm_deletion", False)
             self.strm_path_mappings = config.get("strm_path_mappings") or ""
-            # 验证延迟时间范围
+            # 验证延迟时间范围，允许用户设置较长的延迟时间（最长 24 小时）
             delay_seconds = config.get("delay_seconds", 30)
-            self._delay_seconds = (
-                max(10, min(300, int(delay_seconds))) if delay_seconds else 30
-            )
+            try:
+                self._delay_seconds = max(10, min(86400, int(delay_seconds)))
+            except (TypeError, ValueError):
+                self._delay_seconds = 30
 
         # 停止现有任务
         self.stop_service()
@@ -599,7 +600,7 @@ class RemoveLink(_PluginBase):
                                             "label": "延迟时间(秒)",
                                             "type": "number",
                                             "min": 10,
-                                            "max": 300,
+                                            "max": 86400,
                                             "placeholder": "30",
                                         },
                                     }
