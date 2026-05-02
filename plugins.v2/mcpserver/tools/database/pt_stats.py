@@ -227,16 +227,13 @@ class PTStatsTool(BaseTool):
                 "properties": {
                     "site_domain": {
                         "type": "string",
-                        "description": "站点域名（与site_name二选一）"
+                        "description": "站点域名（与site_name二选一；如果同时提供，优先使用site_domain）"
                     },
                     "site_name": {
                         "type": "string",
-                        "description": "站点名称（与site_domain二选一）"
+                        "description": "站点名称（与site_domain二选一；如果同时提供，优先使用site_domain）"
                     }
                 },
-                "anyOf": [
-                    {"required": ["site_domain"]},
-                    {"required": ["site_name"]}
-                ]
+                "description": "必须提供 site_domain 或 site_name 中的一个参数；如果同时提供，优先使用 site_domain。"
             }
         )
