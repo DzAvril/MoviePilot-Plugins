@@ -308,8 +308,9 @@ class ProcessManager:
             manual_token = self.plugin._config.get("mp_access_token", "").strip()
             if manual_token:
                 logger.info("使用手动配置的访问令牌")
-                if self.plugin._validate_access_token(manual_token):
-                    self.plugin._config["access_token"] = manual_token
+                validated_token = self.plugin._get_manual_token_for_api(manual_token)
+                if validated_token:
+                    self.plugin._config["access_token"] = validated_token
                     logger.info("手动配置的访问令牌验证成功")
                     return True
                 else:
@@ -655,7 +656,7 @@ class MCPServer(_PluginBase, metaclass=SingletonClass):
     plugin_name = "MCP Server"
     plugin_desc = "使用MCP客户端通过大模型来操作MoviePilot"
     plugin_icon = "https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/main/icons/mcp.png"
-    plugin_version = "2.4"
+    plugin_version = "2.5"
     plugin_author = "DzAvril"
     author_url = "https://github.com/DzAvril"
     plugin_config_prefix = "mcpserver_"
@@ -1926,9 +1927,10 @@ class MCPServer(_PluginBase, metaclass=SingletonClass):
             manual_token = self._config.get("mp_access_token", "").strip()
             if manual_token:
                 logger.info("检测到手动配置的访问令牌，正在验证...")
-                if self._validate_access_token(manual_token):
+                validated_token = self._get_manual_token_for_api(manual_token)
+                if validated_token:
                     logger.info("手动配置的访问令牌验证成功")
-                    return manual_token
+                    return validated_token
                 else:
                     logger.warning("手动配置的访问令牌验证失败，将尝试用户名密码认证")
 
@@ -1942,24 +1944,43 @@ class MCPServer(_PluginBase, metaclass=SingletonClass):
 
     def _validate_access_token(self, token: str) -> bool:
         """验证访问令牌是否有效"""
+        return self._get_manual_token_for_api(token) is not None
+
+    def _get_manual_token_for_api(self, token: str) -> Optional[str]:
+        """验证手动配置的令牌，并返回服务进程可使用的令牌格式。
+
+        MoviePilot 的“API 令牌”使用 X-API-KEY 请求头，而登录接口返回的
+        access token 使用 Authorization: Bearer 请求头。这里同时兼容两类令牌；
+        API 令牌会在内部加上 apikey: 前缀，供 MCP 服务进程选择正确请求头。
+        """
         try:
-            # 使用令牌调用一个简单的API来验证其有效性
+            if not token:
+                return None
+
             base_url = f"http://localhost:{settings.PORT}"
             test_url = f"{base_url}/api/v1/user/current"
 
-            headers = {"Authorization": f"Bearer {token}"}
-            response = requests.get(test_url, headers=headers, timeout=10)
+            auth_methods = [
+                ({"Authorization": f"Bearer {token}"}, token, "Bearer access token"),
+                ({"X-API-KEY": token}, f"apikey:{token}", "API key"),
+            ]
+            for headers, normalized_token, token_type in auth_methods:
+                try:
+                    response = requests.get(test_url, headers=headers, timeout=10)
+                except Exception as e:
+                    logger.debug(f"验证{token_type}时出错: {str(e)}")
+                    continue
 
-            if response.status_code == 200:
-                logger.debug("访问令牌验证成功")
-                return True
-            else:
-                logger.debug(f"访问令牌验证失败，状态码: {response.status_code}")
-                return False
+                if response.status_code == 200:
+                    logger.debug(f"手动配置的{token_type}验证成功")
+                    return normalized_token
+                logger.debug(f"手动配置的{token_type}验证失败，状态码: {response.status_code}")
+
+            return None
 
         except Exception as e:
             logger.debug(f"验证访问令牌时出错: {str(e)}")
-            return False
+            return None
 
     def _get_token_by_credentials(self) -> Optional[str]:
         """通过用户名和密码获取访问令牌"""

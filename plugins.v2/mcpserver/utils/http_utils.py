@@ -119,11 +119,15 @@ async def make_request(
     logger.debug(f"[make_request] 重试次数: {retry_count}")
     logger.debug(f"[make_request] BASE_URL: {config.BASE_URL}")
 
-    # 处理认证
+    # 处理认证：支持 MoviePilot 登录 access token（Bearer）和 API 令牌（X-API-KEY）。
     headers = {}
     if access_token:
-        headers["Authorization"] = f"Bearer {access_token}"
-        logger.debug(f"[make_request] 设置Authorization头")
+        if access_token.startswith("apikey:"):
+            headers["X-API-KEY"] = access_token.removeprefix("apikey:")
+            logger.debug("[make_request] 设置X-API-KEY头")
+        else:
+            headers["Authorization"] = f"Bearer {access_token}"
+            logger.debug("[make_request] 设置Authorization头")
     else:
         logger.warning("[make_request] 未提供access_token，请求可能会失败")
 
