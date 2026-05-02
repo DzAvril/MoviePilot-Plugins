@@ -197,7 +197,7 @@ class RemoveLink(_PluginBase):
     # 插件图标
     plugin_icon = "Ombi_A.png"
     # 插件版本
-    plugin_version = "2.8"
+    plugin_version = "2.9"
     # 插件作者
     plugin_author = "DzAvril"
     # 作者主页
@@ -954,12 +954,30 @@ class RemoveLink(_PluginBase):
 
         logger.debug("服务停止完成")
 
+    @staticmethod
+    def _normalize_config_path(config_path: str) -> str:
+        """规范化配置中的目录路径，保留不存在路径的可比较形式。"""
+        return os.path.normcase(os.path.normpath(str(Path(config_path).expanduser())))
+
+    @classmethod
+    def _is_same_or_child_path(cls, path: Path, base_path: str) -> bool:
+        """判断 path 是否等于 base_path 或位于 base_path 下，避免子串误匹配。"""
+        if not base_path:
+            return False
+        normalized_path = cls._normalize_config_path(str(path))
+        normalized_base = cls._normalize_config_path(base_path)
+        try:
+            return os.path.commonpath([normalized_path, normalized_base]) == normalized_base
+        except ValueError:
+            return False
+
     def __is_excluded(self, file_path: Path) -> bool:
         """
         是否排除目录
         """
         for exclude_dir in self.exclude_dirs.split("\n"):
-            if exclude_dir and exclude_dir in str(file_path):
+            exclude_dir = exclude_dir.strip()
+            if exclude_dir and self._is_same_or_child_path(file_path, exclude_dir):
                 return True
         return False
 
