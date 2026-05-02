@@ -34,7 +34,7 @@ class EventEntry:
 
     event_id: EventId
     stream_id: StreamId
-    message: JSONRPCMessage
+    message: JSONRPCMessage | None
 
 
 class InMemoryEventStore(EventStore):
@@ -59,7 +59,7 @@ class InMemoryEventStore(EventStore):
         self.event_index: dict[EventId, EventEntry] = {}
 
     async def store_event(
-        self, stream_id: StreamId, message: JSONRPCMessage
+        self, stream_id: StreamId, message: JSONRPCMessage | None
     ) -> EventId:
         """Stores an event with a generated event ID."""
         event_id = str(uuid4())
@@ -102,7 +102,8 @@ class InMemoryEventStore(EventStore):
         found_last = False
         for event in stream_events:
             if found_last:
-                await send_callback(EventMessage(event.message, event.event_id))
+                if event.message is not None:
+                    await send_callback(EventMessage(event.message, event.event_id))
             elif event.event_id == last_event_id:
                 found_last = True
 
@@ -198,15 +199,19 @@ class SQLiteEventStore(EventStore):
             self._cleanup_task = None
             logger.info("Cleanup task stopped")
 
-    def _serialize_message(self, message: JSONRPCMessage) -> str:
-        """Serialize a JSONRPCMessage to a string for storage."""
+    def _serialize_message(self, message: JSONRPCMessage | None) -> str:
+        """Serialize a JSONRPCMessage, or a priming event with no payload, for storage."""
+        if message is None:
+            return json.dumps(None)
         # Extract the root value from the JSONRPCMessage (a RootModel)
         message_dict = message.root.model_dump()
         return json.dumps(message_dict)
 
-    def _deserialize_message(self, message_str: str) -> JSONRPCMessage:
-        """Deserialize a string to a JSONRPCMessage."""
+    def _deserialize_message(self, message_str: str) -> JSONRPCMessage | None:
+        """Deserialize a string to a JSONRPCMessage, or None for priming events."""
         message_dict = json.loads(message_str)
+        if message_dict is None:
+            return None
         return JSONRPCMessage.model_validate(message_dict)
 
     async def cleanup_old_events(self):
@@ -322,7 +327,7 @@ class SQLiteEventStore(EventStore):
             await self.vacuum_database()
 
     async def store_event(
-        self, stream_id: StreamId, message: JSONRPCMessage
+        self, stream_id: StreamId, message: JSONRPCMessage | None
     ) -> EventId:
         """Stores an event with a generated event ID in SQLite database."""
         event_id = str(uuid4())
@@ -404,9 +409,12 @@ class SQLiteEventStore(EventStore):
 
         events = await asyncio.get_event_loop().run_in_executor(None, get_newer_events)
 
-        # Send each event through the callback
+        # Send each event through the callback. Priming events have no JSON-RPC
+        # payload and are only used to reserve an SSE event id, so they should
+        # not be replayed as application messages.
         for event_id, message_str in events:
             message = self._deserialize_message(message_str)
-            await send_callback(EventMessage(message, event_id))
+            if message is not None:
+                await send_callback(EventMessage(message, event_id))
 
         return stream_id
