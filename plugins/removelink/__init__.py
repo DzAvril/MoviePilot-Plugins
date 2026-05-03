@@ -1,5 +1,6 @@
 import os
 import platform
+import copy
 import shutil
 import threading
 import time
@@ -197,7 +198,7 @@ class RemoveLink(_PluginBase):
     # 插件图标
     plugin_icon = "Ombi_A.png"
     # 插件版本
-    plugin_version = "2.10"
+    plugin_version = "2.11"
     # 插件作者
     plugin_author = "DzAvril"
     # 作者主页
@@ -1631,7 +1632,7 @@ class RemoveLink(_PluginBase):
 
                 if not files:
                     # 目录为空，删除它
-                    if self._storagechain.delete_file(current_item):
+                    if self._delete_storage_empty_dir(storage_type, current_item):
                         logger.info(f"删除网盘空目录: [{storage_type}] {current_path}")
                         deleted_count += 1
 
@@ -1683,7 +1684,9 @@ class RemoveLink(_PluginBase):
                             )
                             if not files:
                                 # 现在目录为空，删除它
-                                if self._storagechain.delete_file(current_item):
+                                if self._delete_storage_empty_dir(
+                                    storage_type, current_item
+                                ):
                                     logger.info(
                                         f"删除网盘空目录: [{storage_type}] {current_path}"
                                     )
@@ -1716,6 +1719,48 @@ class RemoveLink(_PluginBase):
             )
 
         return deleted_count
+
+    def _delete_storage_empty_dir(
+        self, storage_type: str, dir_item: schemas.FileItem
+    ) -> bool:
+        """
+        精确删除指定网盘空目录。
+
+        OpenList/Alist 的 remove_empty_directory 只清理传入目录下一级空目录，
+        不能删除传入目录本身。这里复用通用删除接口的语义，让适配器走
+        /api/fs/remove 等价路径，避免把路径改到父目录后触发父目录扫描。
+        """
+        if storage_type.lower() not in ("alist", "openlist"):
+            return bool(self._storagechain.delete_file(dir_item))
+
+        delete_item = self._as_storage_remove_item(dir_item)
+        return bool(self._storagechain.delete_file(delete_item))
+
+    @staticmethod
+    def _as_storage_remove_item(file_item: schemas.FileItem) -> schemas.FileItem:
+        """
+        构造用于通用 remove 删除的 FileItem。
+
+        MoviePilot 的 Alist/OpenList 适配器会在 type == "dir" 且为空目录时
+        优先使用 remove_empty_directory；将删除请求作为通用条目传入，可以
+        让适配器使用 /api/fs/remove 删除 file_item.path 指定的目录本身。
+        """
+        try:
+            if hasattr(file_item, "model_copy"):
+                delete_item = file_item.model_copy(update={"type": "file"})
+            elif hasattr(file_item, "copy"):
+                delete_item = file_item.copy(update={"type": "file"})
+            else:
+                delete_item = copy.copy(file_item)
+                delete_item.type = "file"
+        except Exception:
+            delete_item = copy.copy(file_item)
+            delete_item.type = "file"
+
+        if not getattr(delete_item, "name", None):
+            delete_item.name = Path(delete_item.path).name
+
+        return delete_item
 
     def _get_storage_dir_item(
         self, storage_type: str, dir_path: str
