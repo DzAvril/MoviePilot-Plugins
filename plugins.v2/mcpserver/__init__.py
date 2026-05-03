@@ -9,6 +9,7 @@ import socket
 import secrets
 import string
 import json
+import os
 from enum import Enum
 from typing import List, Tuple, Dict, Any, Optional
 from pathlib import Path
@@ -366,7 +367,11 @@ class ProcessManager:
 
             logger.info(f"启动命令: {' '.join(cmd)}")
 
-            self.process = subprocess.Popen(cmd, cwd=str(self.plugin._plugin_dir))
+            self.process = subprocess.Popen(
+                cmd,
+                cwd=str(self.plugin._plugin_dir),
+                env=self.plugin._build_process_env(),
+            )
 
             if self.process is None:
                 raise RuntimeError("进程启动失败")
@@ -656,7 +661,7 @@ class MCPServer(_PluginBase, metaclass=SingletonClass):
     plugin_name = "MCP Server"
     plugin_desc = "使用MCP客户端通过大模型来操作MoviePilot"
     plugin_icon = "https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/main/icons/mcp.png"
-    plugin_version = "2.6"
+    plugin_version = "2.7"
     plugin_author = "DzAvril"
     author_url = "https://github.com/DzAvril"
     plugin_config_prefix = "mcpserver_"
@@ -764,6 +769,26 @@ class MCPServer(_PluginBase, metaclass=SingletonClass):
         self._handle_server_operations(
             enable_changed, server_type_changed, auth_config_changed
         )
+
+    def _build_process_env(self) -> Dict[str, str]:
+        """构建MCP子进程环境变量，注入可复用的MoviePilot配置路径。"""
+        env = os.environ.copy()
+
+        config_path = getattr(settings, "CONFIG_PATH", None)
+        if config_path:
+            user_db_path = Path(config_path) / "user.db"
+            env.setdefault("MCPSERVER_CONFIG_PATH", str(config_path))
+            env.setdefault("MCPSERVER_USER_DB_PATH", str(user_db_path))
+            env.setdefault("MOVIEPILOT_CONFIG_PATH", str(config_path))
+            env.setdefault("MOVIEPILOT_USER_DB_PATH", str(user_db_path))
+
+        configured_db_path = self._config.get("user_db_path") or self._config.get(
+            "database_path"
+        )
+        if configured_db_path:
+            env["MCPSERVER_USER_DB_PATH"] = str(configured_db_path)
+
+        return env
 
     def _handle_server_operations(
         self, enable_changed: bool, server_type_changed: bool, auth_config_changed: bool

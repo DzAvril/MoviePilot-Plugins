@@ -2,6 +2,7 @@ import logging
 import sqlite3
 import os
 import sys
+from pathlib import Path
 from typing import List, Dict, Any
 import mcp.types as types
 from ..base import BaseTool
@@ -20,35 +21,94 @@ class PTStatsTool(BaseTool):
     def __init__(self, token_manager=None):
         super().__init__(token_manager)
         # 数据库路径 - 自动检测生产环境或开发环境
+        self.db_path_candidates = []
         self.db_path = self._get_database_path()
 
     def _get_database_path(self) -> str:
-        """自动检测数据库路径"""
-        # 生产环境路径
-        production_path = "/config/user.db"
+        """自动检测数据库路径，兼容 Docker、Windows 和本地开发环境。"""
+        candidates = self._get_database_path_candidates()
+        self.db_path_candidates = candidates
 
-        # 开发环境路径
-        dev_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            "user.db"
+        for candidate in candidates:
+            if os.path.exists(candidate):
+                logger.info(f"使用MoviePilot数据库: {candidate}")
+                return candidate
+
+        fallback = candidates[0] if candidates else "user.db"
+        logger.warning(
+            "数据库文件不存在，已尝试候选路径: %s",
+            ", ".join(candidates) if candidates else fallback,
         )
+        return fallback
 
-        # 优先使用生产环境路径
-        if os.path.exists(production_path):
-            logger.info(f"使用生产环境数据库: {production_path}")
-            return production_path
-        elif os.path.exists(dev_path):
-            logger.info(f"使用开发环境数据库: {dev_path}")
-            return dev_path
-        else:
-            # 如果都不存在，返回生产环境路径（让后续错误处理来处理）
-            logger.warning(f"数据库文件不存在，将尝试使用: {production_path}")
-            return production_path
+    def _get_database_path_candidates(self) -> List[str]:
+        """按优先级生成 user.db 候选路径。"""
+        candidates = []
+
+        def add_candidate(path_value):
+            if not path_value:
+                return
+            path = Path(str(path_value)).expanduser()
+            if path.name != "user.db":
+                path = path / "user.db"
+            candidate = str(path)
+            if candidate not in candidates:
+                candidates.append(candidate)
+
+        # 显式配置优先：父进程会注入 MCPSERVER_USER_DB_PATH，用户也可手动设置。
+        for env_name in (
+            "MCPSERVER_USER_DB_PATH",
+            "MOVIEPILOT_USER_DB_PATH",
+            "MP_USER_DB_PATH",
+            "USER_DB_PATH",
+        ):
+            add_candidate(os.environ.get(env_name))
+
+        for env_name in (
+            "MCPSERVER_CONFIG_PATH",
+            "MOVIEPILOT_CONFIG_PATH",
+            "MOVIEPILOT_CONFIG_DIR",
+            "MP_CONFIG_PATH",
+            "MP_CONFIG_DIR",
+            "CONFIG_PATH",
+        ):
+            add_candidate(os.environ.get(env_name))
+
+        # 如果工具进程能访问 MoviePilot settings，复用其配置目录。
+        try:
+            from app.core.config import settings
+
+            add_candidate(getattr(settings, "CONFIG_PATH", None))
+        except Exception as e:
+            logger.debug(f"无法从MoviePilot settings读取CONFIG_PATH: {e}")
+
+        plugin_dir = Path(__file__).resolve().parents[2]
+        cwd = Path.cwd()
+
+        # 常见 MoviePilot 与本地开发候选路径。
+        for path in (
+            Path("/config/user.db"),
+            cwd / "user.db",
+            cwd / "config" / "user.db",
+            plugin_dir / "user.db",
+            plugin_dir / "config" / "user.db",
+            Path.home() / ".moviepilot" / "user.db",
+            Path.home() / ".moviepilot" / "config" / "user.db",
+            Path.home() / "MoviePilot" / "user.db",
+            Path.home() / "MoviePilot" / "config" / "user.db",
+        ):
+            add_candidate(path)
+
+        return candidates
 
     def _get_db_connection(self):
         """获取数据库连接"""
         if not os.path.exists(self.db_path):
-            raise FileNotFoundError(f"数据库文件不存在: {self.db_path}")
+            candidates = self.db_path_candidates or [self.db_path]
+            raise FileNotFoundError(
+                "数据库文件不存在，已尝试以下候选路径: "
+                + "; ".join(candidates)
+            )
         return sqlite3.connect(self.db_path)
 
     def _format_size(self, size_bytes: float) -> str:
