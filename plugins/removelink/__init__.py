@@ -197,7 +197,7 @@ class RemoveLink(_PluginBase):
     # 插件图标
     plugin_icon = "Ombi_A.png"
     # 插件版本
-    plugin_version = "2.9"
+    plugin_version = "2.10"
     # 插件作者
     plugin_author = "DzAvril"
     # 作者主页
@@ -1118,6 +1118,33 @@ class RemoveLink(_PluginBase):
             # 更新路径为父目录，准备下一轮检查
             path = parent_path
 
+    def _unlink_tracked_file(self, file: Path, state_key: str, action: str) -> bool:
+        """
+        删除 file_state 中记录的硬链接文件。
+
+        监控事件可能先后到达：用户手动删除源文件后，又在插件处理前手动删除了
+        对应硬链接。此时 file_state 里仍可能保存着已不存在的路径，直接 unlink
+        会抛出 FileNotFoundError 并中断当前批次清理。这里把这种过期状态视为
+        已经被外部清理，移除记录后继续处理其它文件，避免删除队列/监控流程被卡住。
+        """
+        if self.__is_excluded(file):
+            logger.debug(f"文件 {file} 在不删除目录中，跳过")
+            return False
+
+        try:
+            logger.info(f"{action}硬链接文件：{state_key}")
+            file.unlink()
+        except FileNotFoundError:
+            logger.warning(f"硬链接文件已不存在，清理过期监控记录：{state_key}")
+            self.file_state.pop(state_key, None)
+            return False
+        except OSError as e:
+            logger.error(f"删除硬链接文件失败：{state_key} - {e}")
+            return False
+
+        self.file_state.pop(state_key, None)
+        return True
+
     def _execute_delayed_deletion(self, task: DeletionTask):
         """
         执行延迟删除任务
@@ -1166,13 +1193,8 @@ class RemoveLink(_PluginBase):
                 for path, file_info in self.file_state.copy().items():
                     if file_info.inode == task.deleted_inode:
                         file = Path(path)
-                        if self.__is_excluded(file):
-                            logger.debug(f"文件 {file} 在不删除目录中，跳过")
+                        if not self._unlink_tracked_file(file, path, "延迟删除"):
                             continue
-
-                        # 删除硬链接文件
-                        logger.info(f"延迟删除硬链接文件：{path}")
-                        file.unlink()
                         deleted_files.append(path)
 
                         # 清理硬链接文件相关的刮削文件
@@ -1185,9 +1207,6 @@ class RemoveLink(_PluginBase):
                                 )
                         # 删除硬链接文件的转移记录
                         self.delete_history(str(file))
-
-                        # 从状态集合中移除
-                        self.file_state.pop(path, None)
 
             # 发送通知（在锁外执行）
             if self._notify and deleted_files:
@@ -1358,12 +1377,8 @@ class RemoveLink(_PluginBase):
                     for path, file_info in self.file_state.copy().items():
                         if file_info.inode == deleted_inode:
                             file = Path(path)
-                            if self.__is_excluded(file):
-                                logger.debug(f"文件 {file} 在不删除目录中，跳过")
+                            if not self._unlink_tracked_file(file, path, "立即删除"):
                                 continue
-                            # 删除硬链接文件
-                            logger.info(f"立即删除硬链接文件：{path}")
-                            file.unlink()
                             deleted_files.append(path)
 
                             # 清理刮削文件
