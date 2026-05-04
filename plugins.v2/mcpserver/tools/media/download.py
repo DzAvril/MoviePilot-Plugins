@@ -38,6 +38,21 @@ class MovieDownloadTool(BaseTool):
                 )
             ]
 
+    @staticmethod
+    def _as_dict(value) -> dict:
+        """Return dict values as-is and treat malformed nested API fields as empty."""
+        return value if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _first_text(*values, default: str = "") -> str:
+        for value in values:
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                return text
+        return default
+
     def _format_search_results(self, torrents: list, keyword: str, year: str = None, detailed: bool = True, limit: int = 50) -> str:
         """
         格式化搜索结果
@@ -69,20 +84,26 @@ class MovieDownloadTool(BaseTool):
 
             # 提取需要的信息
             # 检查torrent_info字段
-            torrent_info = torrent.get("torrent_info", {})
-            meta_info = torrent.get("meta_info", {})
+            torrent_info = self._as_dict(torrent.get("torrent_info"))
+            meta_info = self._as_dict(torrent.get("meta_info"))
             if not torrent_info:
                 # 可能是Context对象的直接序列化
                 torrent_info = torrent
 
             # 从torrent_info中提取数据
-            title = torrent_info.get("description", "未知标题")
-            if not title or title == "未知标题":
-                # 尝试从meta_info中获取标题
-                if meta_info:
-                    title = meta_info.get("subtitle", "未知标题")
+            title = self._first_text(
+                torrent_info.get("description"),
+                torrent_info.get("title"),
+                meta_info.get("subtitle"),
+                meta_info.get("org_string"),
+                default="未知标题"
+            )
 
-            site_name = torrent_info.get("site_name", "未知站点")
+            site_name = self._first_text(
+                torrent_info.get("site_name"),
+                torrent_info.get("site"),
+                default="未知站点"
+            )
 
             # 处理大小显示
             size_bytes = torrent_info.get("size", 0)
@@ -103,7 +124,7 @@ class MovieDownloadTool(BaseTool):
             resolution = "未知分辨率"
             if meta_info:
                 # 尝试直接从标题中提取分辨率
-                title_str = meta_info.get("org_string", "")
+                title_str = self._first_text(meta_info.get("org_string"))
                 if title_str:
                     import re
                     res_pattern = (
@@ -132,17 +153,25 @@ class MovieDownloadTool(BaseTool):
                 discount = torrent_info.get("volume_factor", 0)
 
                 # 提取视频编码
-                video_encode = meta_info.get("video_encode", "未知编码")
+                video_encode = self._first_text(
+                    meta_info.get("video_encode"), default="未知编码")
                 # 提取音频编码
-                audio_encode = meta_info.get("audio_encode", "未知音频")
+                audio_encode = self._first_text(
+                    meta_info.get("audio_encode"), default="未知音频")
                 # 提取资源类型
-                resource_type = meta_info.get("resource_type", "未知来源")
+                resource_type = self._first_text(
+                    meta_info.get("resource_type"), default="未知来源")
                 # 提取制作组/字幕组
-                resource_team = meta_info.get("resource_team", "")
+                resource_team = self._first_text(meta_info.get("resource_team"))
 
                 # 提取字幕信息
                 subtitle_info = "无字幕信息"
-                description = torrent_info.get("description", "")
+                description = self._first_text(
+                    torrent_info.get("description"),
+                    torrent_info.get("title"),
+                    meta_info.get("subtitle"),
+                    meta_info.get("org_string")
+                )
                 if description:
                     # 检查是否包含字幕信息
                     subtitle_keywords = [
