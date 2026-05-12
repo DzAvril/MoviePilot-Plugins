@@ -29,6 +29,7 @@ deletion_queue_lock = threading.Lock()
 class FileInfo(NamedTuple):
     """文件信息"""
 
+    dev: int
     inode: int
     add_time: datetime
 
@@ -38,7 +39,9 @@ class DeletionTask:
     """延迟删除任务"""
 
     file_path: Path
+    deleted_dev: int
     deleted_inode: int
+    deleted_add_time: datetime
     timestamp: datetime
     processed: bool = False
 
@@ -79,7 +82,11 @@ class FileMonitorHandler(FileSystemEventHandler):
                 if not file_path.exists():
                     return
                 stat_info = file_path.stat()
-                file_info = FileInfo(inode=stat_info.st_ino, add_time=datetime.now())
+                file_info = FileInfo(
+                    dev=stat_info.st_dev,
+                    inode=stat_info.st_ino,
+                    add_time=datetime.now(),
+                )
                 self.sync.file_state[str(file_path)] = file_info
                 logger.debug(f"添加文件到监控：{file_path}")
             except (OSError, PermissionError) as e:
@@ -168,7 +175,11 @@ def updateState(monitor_dirs: List[str]):
                         # 获取文件统计信息
                         stat_info = file_path.stat()
                         # 记录文件信息
-                        file_info = FileInfo(inode=stat_info.st_ino, add_time=init_time)
+                        file_info = FileInfo(
+                            dev=stat_info.st_dev,
+                            inode=stat_info.st_ino,
+                            add_time=init_time,
+                        )
                         file_state[str(file_path)] = file_info
                     except (OSError, PermissionError) as e:
                         error_count += 1
@@ -198,7 +209,7 @@ class RemoveLink(_PluginBase):
     # 插件图标
     plugin_icon = "Ombi_A.png"
     # 插件版本
-    plugin_version = "2.11"
+    plugin_version = "2.12"
     # 插件作者
     plugin_author = "DzAvril"
     # 作者主页
@@ -263,7 +274,7 @@ class RemoveLink(_PluginBase):
     _transferhistory = None
     _storagechain = None
     _observer = []
-    # 监控目录的文件列表 {文件路径: FileInfo(inode, add_time)}
+    # 监控目录的文件列表 {文件路径: FileInfo(dev, inode, add_time)}
     file_state: Dict[str, FileInfo] = {}
     # 延迟删除队列
     deletion_queue: List[DeletionTask] = []
@@ -1146,6 +1157,11 @@ class RemoveLink(_PluginBase):
         self.file_state.pop(state_key, None)
         return True
 
+    @staticmethod
+    def _same_file_identity(file_info: FileInfo, dev: int, inode: int) -> bool:
+        """判断两个监控记录是否指向同一个本地文件实体。"""
+        return file_info.dev == dev and file_info.inode == inode
+
     def _execute_delayed_deletion(self, task: DeletionTask):
         """
         执行延迟删除任务
@@ -1161,13 +1177,14 @@ class RemoveLink(_PluginBase):
             # 检查是否有相同inode的新文件（重新硬链接的情况）
             with state_lock:
                 for path, file_info in self.file_state.items():
-                    if file_info.inode == task.deleted_inode and path != str(
-                        task.file_path
-                    ):
-                        # 检查文件是否在删除任务创建之后被添加到监控中
-                        if file_info.add_time > task.timestamp:
+                    if self._same_file_identity(
+                        file_info, task.deleted_dev, task.deleted_inode
+                    ) and path != str(task.file_path):
+                        # 检查文件是否晚于被删除路径加入监控，重新整理时新硬链接事件
+                        # 可能早于删除事件到达，不能只比较删除任务创建时间。
+                        if file_info.add_time > task.deleted_add_time:
                             logger.info(
-                                f"检测到相同inode的新文件 {path}，添加时间 {file_info.add_time} 晚于删除时间 {task.timestamp}，可能是重新硬链接，跳过删除操作"
+                                f"检测到相同文件实体的新文件 {path}，添加时间 {file_info.add_time} 晚于原路径加入时间 {task.deleted_add_time}，可能是重新硬链接，跳过删除操作"
                             )
                             return
 
@@ -1192,7 +1209,9 @@ class RemoveLink(_PluginBase):
 
             with state_lock:
                 for path, file_info in self.file_state.copy().items():
-                    if file_info.inode == task.deleted_inode:
+                    if self._same_file_identity(
+                        file_info, task.deleted_dev, task.deleted_inode
+                    ):
                         file = Path(path)
                         if not self._unlink_tracked_file(file, path, "延迟删除"):
                             continue
@@ -1335,6 +1354,8 @@ class RemoveLink(_PluginBase):
                 return
             else:
                 deleted_inode = file_info.inode
+                deleted_dev = file_info.dev
+                deleted_add_time = file_info.add_time
                 self.file_state.pop(str(file_path))
 
             # 根据配置选择立即删除或延迟删除
@@ -1345,7 +1366,9 @@ class RemoveLink(_PluginBase):
                 )
                 task = DeletionTask(
                     file_path=file_path,
+                    deleted_dev=deleted_dev,
                     deleted_inode=deleted_inode,
+                    deleted_add_time=deleted_add_time,
                     timestamp=datetime.now(),
                 )
 
@@ -1376,7 +1399,9 @@ class RemoveLink(_PluginBase):
                 try:
                     # 在file_state中查找与deleted_inode有相同inode的文件并删除
                     for path, file_info in self.file_state.copy().items():
-                        if file_info.inode == deleted_inode:
+                        if self._same_file_identity(
+                            file_info, deleted_dev, deleted_inode
+                        ):
                             file = Path(path)
                             if not self._unlink_tracked_file(file, path, "立即删除"):
                                 continue
