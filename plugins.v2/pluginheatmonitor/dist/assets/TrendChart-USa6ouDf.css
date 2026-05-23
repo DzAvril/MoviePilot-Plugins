@@ -1,0 +1,46 @@
+
+.trend-chart[data-v-696ba65f] {
+  width: 100%;
+}
+.chart-header[data-v-696ba65f] {
+  border-bottom: 1px solid rgb(var(--v-theme-outline-variant));
+  padding-bottom: 12px;
+}
+.chart-container[data-v-696ba65f] {
+  width: 100%;
+  overflow: hidden;
+}
+
+/* 移动端适配 */
+@media (max-width: 600px) {
+.chart-header .d-flex[data-v-696ba65f] {
+    flex-direction: column;
+    align-items: flex-start !important;
+    gap: 12px;
+}
+.chart-header .d-flex[data-v-696ba65f]:last-child {
+    align-items: center !important;
+    width: 100%;
+    justify-content: space-between;
+}
+}
+.echart-wrapper[data-v-696ba65f] {
+  width: 100%;
+  position: relative;
+}
+.trend-data-chip[data-v-696ba65f] {
+  height: 20px !important;
+  font-size: 10px !important;
+  font-weight: 600 !important;
+  padding: 0 8px !important;
+}
+.trend-time-toggle[data-v-696ba65f] {
+  height: 28px !important;
+  border-radius: 6px !important;
+}
+.trend-toggle-btn[data-v-696ba65f] {
+  height: 28px !important;
+  min-height: 28px !important;
+  font-size: 11px !important;
+  padding: 0 8px !important;
+}

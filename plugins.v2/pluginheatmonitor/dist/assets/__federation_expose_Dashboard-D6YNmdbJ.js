@@ -1,5 +1,6 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { _ as _export_sfc, T as TrendChart } from './TrendChart-DZEKiQA1.js';
+import { _ as _export_sfc } from './_plugin-vue_export-helper-CRrXaTHX.js';
+import { T as TrendChart } from './TrendChart-0RIadg9q.js';
 
 const {renderList:_renderList,Fragment:_Fragment,openBlock:_openBlock$1,createElementBlock:_createElementBlock$1,toDisplayString:_toDisplayString$1,createTextVNode:_createTextVNode$1,resolveComponent:_resolveComponent$1,withCtx:_withCtx$1,createVNode:_createVNode$1,normalizeClass:_normalizeClass,normalizeStyle:_normalizeStyle,createElementVNode:_createElementVNode$1} = await importShared('vue');
 
@@ -120,38 +121,17 @@ function getDayLevel(downloads) {
 
 // 获取蓝色系颜色（年份）
 function getBlueColor(level) {
-  const colors = {
-    0: '#e3f2fd',  // 无数据 - 浅蓝
-    1: '#bbdefb',  // 少量 - 淡蓝
-    2: '#64b5f6',  // 一般 - 中蓝
-    3: '#2196f3',  // 较多 - 蓝色
-    4: '#1565c0'   // 很多 - 深蓝
-  };
-  return colors[level] || colors[0]
+  return `var(--heat-year-${level})`
 }
 
 // 获取橙色系颜色（月份）
 function getOrangeColor(level) {
-  const colors = {
-    0: '#fff3e0',  // 无数据 - 浅橙
-    1: '#ffcc80',  // 少量 - 淡橙
-    2: '#ffb74d',  // 一般 - 中橙
-    3: '#ff9800',  // 较多 - 橙色
-    4: '#e65100'   // 很多 - 深橙
-  };
-  return colors[level] || colors[0]
+  return `var(--heat-month-${level})`
 }
 
 // 获取绿色系颜色（天数）
 function getGreenColor(level) {
-  const colors = {
-    0: '#ebedf0',  // 无数据 - 灰色
-    1: '#c6e48b',  // 少量 - 浅绿
-    2: '#7bc96f',  // 一般 - 中绿
-    3: '#239a3b',  // 较多 - 绿色
-    4: '#196127'   // 很多 - 深绿
-  };
-  return colors[level] || colors[0]
+  return `var(--heat-day-${level})`
 }
 
 // 获取年份单元格样式
@@ -308,7 +288,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const HeatmapLevels = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-e9efecd5"]]);
+const HeatmapLevels = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-5e56b957"]]);
 
 const {resolveComponent:_resolveComponent,createVNode:_createVNode,createElementVNode:_createElementVNode,openBlock:_openBlock,createElementBlock:_createElementBlock,createCommentVNode:_createCommentVNode,createTextVNode:_createTextVNode,withCtx:_withCtx,toDisplayString:_toDisplayString,createBlock:_createBlock} = await importShared('vue');
 
@@ -378,7 +358,6 @@ const _hoisted_38 = { class: "text-center" };
 const _hoisted_39 = { class: "text-body-1 font-weight-bold" };
 const _hoisted_40 = { class: "text-center" };
 const _hoisted_41 = { class: "text-body-2 font-weight-bold" };
-
 const {ref,reactive,computed,onMounted,onUnmounted} = await importShared('vue');
 
 const {useDisplay} = await importShared('vuetify');
@@ -1202,6 +1181,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Dashboard = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-13c8218f"]]);
+const Dashboard = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-e72b01fe"]]);
 
 export { Dashboard as default };

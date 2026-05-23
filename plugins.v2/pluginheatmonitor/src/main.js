@@ -6,6 +6,7 @@ import * as directives from 'vuetify/directives'
 import defaults from './vuetify/defaults'
 import theme from './vuetify/theme'
 import 'vuetify/styles'
+import './styles/tokens.css'
 
 // 创建Vuetify实例
 const vuetify = createVuetify({

@@ -1,0 +1,143 @@
+:root {
+  /* 主色调 - 保持 Vuetify theme 兼容 */
+  --heat-primary: #2563EB;       /* 更现代的蓝色 */
+  --heat-success: #047857;       /* 增长正向 */
+  --heat-warning: #D97706;       /* 警告/历史数据 */
+  --heat-danger:  #DC2626;       /* 错误/高风险 */
+  --heat-surface: #F9FAFB;       /* 次级表面 */
+  --heat-border:  #E5E7EB;       /* 统一边框色 */
+
+  /* 阴影与过渡 */
+  --heat-shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --heat-shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  --heat-shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  --heat-transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* 热力图色阶（GitHub 风格 - 浅色模式） */
+  --heat-level-0: #ebedf0;
+  --heat-level-1: #9be9a8;
+  --heat-level-2: #40c463;
+  --heat-level-3: #30a14e;
+  --heat-level-4: #216e39;
+
+  /* 三级热力图年份蓝系 */
+  --heat-year-0: #e3f2fd;
+  --heat-year-1: #bbdefb;
+  --heat-year-2: #64b5f6;
+  --heat-year-3: #2196f3;
+  --heat-year-4: #1565c0;
+
+  /* 三级热力图月份橙系 */
+  --heat-month-0: #fff3e0;
+  --heat-month-1: #ffcc80;
+  --heat-month-2: #ffb74d;
+  --heat-month-3: #ff9800;
+  --heat-month-4: #e65100;
+
+  /* 三级热力图天数绿系 */
+  --heat-day-0: #ebedf0;
+  --heat-day-1: #c6e48b;
+  --heat-day-2: #7bc96f;
+  --heat-day-3: #239a3b;
+  --heat-day-4: #196127;
+}
+
+/* 深色模式覆盖 */
+.v-theme--dark,
+[data-theme='dark'] {
+  --heat-surface: #1e1e1e;
+  --heat-border: #2d2d2d;
+
+  /* 热力图色阶（深色模式 - 更易辨认） */
+  --heat-level-0: #2d333b;
+  --heat-level-1: #1a4731;
+  --heat-level-2: #1d6340;
+  --heat-level-3: #2ea043;
+  --heat-level-4: #3fb950;
+
+  /* 三级热力图年份蓝系 - 深色适配 */
+  --heat-year-0: #0d1b2a;
+  --heat-year-1: #1b263b;
+  --heat-year-2: #415a77;
+  --heat-year-3: #778da9;
+  --heat-year-4: #e0e1dd;
+
+  /* 三级热力图月份橙系 - 深色适配 */
+  --heat-month-0: #2c1a04;
+  --heat-month-1: #4a2800;
+  --heat-month-2: #8c4f00;
+  --heat-month-3: #d97706;
+  --heat-month-4: #f59e0b;
+
+  /* 三级热力图天数绿系 - 深色适配 */
+  --heat-day-0: #161b22;
+  --heat-day-1: #0e4429;
+  --heat-day-2: #006d32;
+  --heat-day-3: #26a641;
+  --heat-day-4: #39d353;
+}
+
+/* 微动画效果 */
+@keyframes heatPulse {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.05); filter: brightness(1.1); }
+  100% { transform: scale(1); }
+}
+
+@keyframes heatScaleIn {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes heatSlideInUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.heat-animate-pulse {
+  animation: heatPulse 2s infinite ease-in-out;
+}
+
+.heat-animate-scale-in {
+  animation: heatScaleIn 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+.heat-animate-slide-up {
+  animation: heatSlideInUp 0.45s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* 卡片和面板磨砂玻璃与精细阴影效果 */
+.heat-glass-card {
+  background: rgb(var(--v-theme-surface)) !important;
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity)) !important;
+  box-shadow: none !important;
+  transition: var(--heat-transition) !important;
+}
+
+.heat-glass-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--heat-shadow-lg) !important;
+}
+
+/* 深色模式：提高卡片表面亮度，增加层次感 */
+.v-theme--dark .heat-glass-card,
+[data-theme='dark'] .heat-glass-card {
+  background: rgba(var(--v-theme-surface-variant), 0.3) !important;
+  border-color: rgba(var(--v-border-color), calc(var(--v-border-opacity) * 1.5)) !important;
+}
+
+/* 全局 Heatmap Tooltip 样式（仅结构属性）
+   颜色/边框/背景由 showTooltip() 通过内联 style 注入，可自动适配深色模式 */
+.heatmap-tooltip {
+  position: fixed;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  pointer-events: none;
+  backdrop-filter: blur(8px);
+  transition: opacity 0.15s ease;
+  z-index: 99999 !important; /* 确保置于最顶层 */
+}
+

@@ -305,6 +305,7 @@
 </template>
 
 <script setup>
+import '../styles/tokens.css'
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useDisplay } from 'vuetify'
 import HeatmapLevels from './HeatmapLevels.vue'
@@ -559,7 +560,7 @@ onUnmounted(() => {
 
 .dashboard-card {
   height: 100%;
-  transition: all 0.3s ease;
+  transition: var(--heat-transition);
 }
 
 .dashboard-content {
@@ -567,96 +568,46 @@ onUnmounted(() => {
 }
 
 .dashboard-main {
-  animation: fadeIn 0.3s ease-in-out;
-}
-
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  animation: heatScaleIn 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
 }
 
 .status-header {
   padding: 12px 16px;
-  background: rgba(var(--v-theme-surface-variant), 0.1);
+  background: rgba(var(--v-theme-surface-variant), 0.05);
   border-radius: 8px;
-  border: 1px solid rgba(var(--v-theme-outline), 0.12);
-}
-
-.status-overview {
-  animation: slideInDown 0.4s ease-out;
-}
-
-@keyframes slideInDown {
-  from {
-    opacity: 0;
-    transform: translateY(-20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.heatmap-section {
-  animation: slideInLeft 0.5s ease-out;
-}
-
-@keyframes slideInLeft {
-  from {
-    opacity: 0;
-    transform: translateX(-20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-
-.detail-section {
-  animation: slideInRight 0.6s ease-out;
-}
-
-@keyframes slideInRight {
-  from {
-    opacity: 0;
-    transform: translateX(20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
+  border: 1px solid var(--heat-border);
 }
 
 .detail-card {
-  background: rgba(var(--v-theme-surface), 0.8);
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(var(--v-theme-outline), 0.12);
-  transition: all 0.3s ease;
+  background: rgba(var(--v-theme-surface), 0.4) !important;
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--heat-border) !important;
+  border-radius: 12px !important;
+  transition: var(--heat-transition) !important;
 }
 
 .detail-card:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 2px 8px rgba(var(--v-theme-outline), 0.2);
+  border-color: rgba(var(--v-theme-primary), 0.3) !important;
+  box-shadow: var(--heat-shadow-md) !important;
 }
 
 /* 插件Logo样式 */
 .plugin-logo {
-  background: linear-gradient(135deg, #ffffff 0%, #f5f5f5 100%);
+  background: linear-gradient(135deg, #ffffff 0%, #f1f5f9 100%);
   border: 2px solid rgba(var(--v-theme-primary), 0.2);
-  box-shadow: 0 2px 8px rgba(var(--v-theme-primary), 0.1);
-  transition: all 0.3s ease;
+  box-shadow: var(--heat-shadow-sm);
+  transition: var(--heat-transition);
+}
+
+.v-theme--dark .plugin-logo {
+  background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+  border-color: rgba(var(--v-theme-primary), 0.3);
 }
 
 .plugin-logo:hover {
   transform: scale(1.05);
   border-color: rgba(var(--v-theme-primary), 0.4);
-  box-shadow: 0 4px 16px rgba(var(--v-theme-primary), 0.2);
+  box-shadow: var(--heat-shadow-md);
 }
 
 .plugin-logo .v-img {
@@ -665,15 +616,18 @@ onUnmounted(() => {
 
 /* 指标卡片样式 */
 .metric-card {
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  border-radius: 12px;
+  background: rgba(var(--v-theme-surface), 0.4) !important;
+  border: 1px solid var(--heat-border) !important;
+  transition: var(--heat-transition) !important;
+  border-radius: 12px !important;
   overflow: hidden;
   position: relative;
 }
 
 .metric-card:hover {
-  transform: translateY(-4px);
-  box-shadow: 0 8px 25px rgba(var(--v-theme-primary), 0.15);
+  transform: translateY(-2px);
+  box-shadow: var(--heat-shadow-md) !important;
+  border-color: currentColor !important;
 }
 
 .metric-card::before {
@@ -689,23 +643,8 @@ onUnmounted(() => {
 
 /* 视图切换样式 */
 .view-toggle-section {
-  border-bottom: 1px solid rgba(var(--v-theme-outline), 0.12);
+  border-bottom: 1px solid var(--heat-border);
   padding-bottom: 12px;
-}
-
-.trend-section {
-  animation: slideInUp 0.5s ease-out;
-}
-
-@keyframes slideInUp {
-  from {
-    opacity: 0;
-    transform: translateY(20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
 }
 
 /* 响应式设计 */
@@ -731,42 +670,20 @@ onUnmounted(() => {
   }
 }
 
-/* 深色主题适配 */
-@media (prefers-color-scheme: dark) {
-  .detail-card {
-    background: rgba(var(--v-theme-surface), 0.9);
-  }
-
-  .status-header {
-    background: rgba(var(--v-theme-surface-variant), 0.15);
-  }
-
-  .plugin-logo {
-    background: linear-gradient(135deg, #2a2a2a 0%, #1e1e1e 100%);
-    border-color: rgba(var(--v-theme-primary), 0.3);
-  }
-}
-
 /* 加载动画优化 */
 .v-progress-circular {
   animation: pulse 2s infinite;
 }
 
 @keyframes pulse {
-  0% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.7;
-  }
-  100% {
-    opacity: 1;
-  }
+  0% { opacity: 1; }
+  50% { opacity: 0.7; }
+  100% { opacity: 1; }
 }
 
 /* 状态指示器动画 */
 .v-chip {
-  transition: all 0.3s ease;
+  transition: var(--heat-transition);
 }
 
 .v-chip:hover {
@@ -775,7 +692,7 @@ onUnmounted(() => {
 
 /* 头像动画 */
 .v-avatar {
-  transition: all 0.3s ease;
+  transition: var(--heat-transition);
 }
 
 .v-avatar:hover {

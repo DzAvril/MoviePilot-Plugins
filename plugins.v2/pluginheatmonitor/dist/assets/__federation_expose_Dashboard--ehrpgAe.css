@@ -1,0 +1,157 @@
+
+.heatmap-levels[data-v-5e56b957] {
+  user-select: none;
+}
+.heatmap-level[data-v-5e56b957] {
+  margin-bottom: 8px;
+}
+.heatmap-cell[data-v-5e56b957] {
+  display: inline-block;
+  transition: all 0.2s ease;
+}
+.heatmap-cell[data-v-5e56b957]:hover {
+  transform: scale(1.2);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  z-index: 10;
+  position: relative;
+}
+.heatmap-cell.selected[data-v-5e56b957] {
+  transform: scale(1.3);
+  z-index: 20;
+  position: relative;
+}
+.year-cell.selected[data-v-5e56b957] {
+  box-shadow: 0 0 0 2px var(--heat-year-4);
+}
+.month-cell.selected[data-v-5e56b957] {
+  box-shadow: 0 0 0 2px var(--heat-month-4);
+}
+
+/* 响应式设计 */
+@media (max-width: 600px) {
+.heatmap-cell[data-v-5e56b957] {
+    margin: 1px;
+}
+.year-cell[data-v-5e56b957] {
+    width: 14px !important;
+    height: 14px !important;
+}
+.month-cell[data-v-5e56b957] {
+    width: 12px !important;
+    height: 12px !important;
+}
+.day-cell[data-v-5e56b957] {
+    width: 10px !important;
+    height: 10px !important;
+}
+}
+
+.heat-monitor-dashboard[data-v-e72b01fe] {
+  width: 100%;
+  height: 100%;
+}
+.dashboard-card[data-v-e72b01fe] {
+  height: 100%;
+  transition: var(--heat-transition);
+}
+.dashboard-content[data-v-e72b01fe] {
+  height: 100%;
+}
+.dashboard-main[data-v-e72b01fe] {
+  animation: heatScaleIn 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+.status-header[data-v-e72b01fe] {
+  padding: 12px 16px;
+  background: rgba(var(--v-theme-surface-variant), 0.05);
+  border-radius: 8px;
+  border: 1px solid var(--heat-border);
+}
+.detail-card[data-v-e72b01fe] {
+  background: rgba(var(--v-theme-surface), 0.4) !important;
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--heat-border) !important;
+  border-radius: 12px !important;
+  transition: var(--heat-transition) !important;
+}
+.detail-card[data-v-e72b01fe]:hover {
+  border-color: rgba(var(--v-theme-primary), 0.3) !important;
+  box-shadow: var(--heat-shadow-md) !important;
+}
+
+/* 插件Logo样式 */
+.plugin-logo[data-v-e72b01fe] {
+  background: linear-gradient(135deg, #ffffff 0%, #f1f5f9 100%);
+  border: 2px solid rgba(var(--v-theme-primary), 0.2);
+  box-shadow: var(--heat-shadow-sm);
+  transition: var(--heat-transition);
+}
+.plugin-logo[data-v-e72b01fe]:hover {
+  transform: scale(1.05);
+  border-color: rgba(var(--v-theme-primary), 0.4);
+  box-shadow: var(--heat-shadow-md);
+}
+
+/* 指标卡片样式 */
+.metric-card[data-v-e72b01fe] {
+  background: rgba(var(--v-theme-surface), 0.4) !important;
+  border: 1px solid var(--heat-border) !important;
+  transition: var(--heat-transition) !important;
+  border-radius: 12px !important;
+  overflow: hidden;
+  position: relative;
+}
+.metric-card[data-v-e72b01fe]:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--heat-shadow-md) !important;
+  border-color: currentColor !important;
+}
+.metric-card[data-v-e72b01fe]::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, currentColor 0%, transparent 100%);
+  opacity: 0.6;
+}
+
+/* 视图切换样式 */
+.view-toggle-section[data-v-e72b01fe] {
+  border-bottom: 1px solid var(--heat-border);
+  padding-bottom: 12px;
+}
+
+/* 响应式设计 */
+@media (max-width: 600px) {
+.status-header[data-v-e72b01fe] {
+    padding: 8px 12px;
+}
+.dashboard-main[data-v-e72b01fe] {
+    padding: 0 4px;
+}
+.view-toggle-section .d-flex[data-v-e72b01fe] {
+    flex-direction: column;
+    align-items: flex-start !important;
+    gap: 12px;
+}
+.view-toggle-section .d-flex[data-v-e72b01fe]:last-child {
+    align-items: center !important;
+    width: 100%;
+    justify-content: center;
+}
+}
+
+/* 加载动画优化 */
+@keyframes pulse-e72b01fe {
+0% { opacity: 1;
+}
+50% { opacity: 0.7;
+}
+100% { opacity: 1;
+}
+}
+
+/* 状态指示器动画 */
+
+/* 头像动画 */
