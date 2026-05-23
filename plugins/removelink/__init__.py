@@ -11,8 +11,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import NamedTuple
 
-from watchdog.events import FileSystemEventHandler
-from watchdog.observers.polling import PollingObserver
 from app.db.transferhistory_oper import TransferHistoryOper
 from app.log import logger
 from app.plugins import _PluginBase
@@ -21,6 +19,65 @@ from app.core.event import eventmanager
 from app.schemas.types import EventType
 from app.chain.storage import StorageChain
 from app import schemas
+
+try:
+    from watchdog.events import FileSystemEventHandler
+    from watchdog.observers.polling import PollingObserver
+except ImportError:
+    class FileSystemEventHandler:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class _WatchfilesEvent:
+        def __init__(self, src_path: str, is_directory: bool = False):
+            self.src_path = src_path
+            self.is_directory = is_directory
+
+    class _WatchfilesObserver:
+        def __init__(self):
+            self.daemon = False
+            self._watches = []
+            self._threads = []
+            self._stop_event = threading.Event()
+
+        def schedule(self, event_handler, path, recursive=True):
+            self._watches.append((event_handler, path, recursive))
+
+        def start(self):
+            for event_handler, path, recursive in self._watches:
+                thread = threading.Thread(
+                    target=self._watch,
+                    args=(event_handler, path, recursive),
+                    daemon=self.daemon,
+                )
+                self._threads.append(thread)
+                thread.start()
+
+        def stop(self):
+            self._stop_event.set()
+
+        def join(self, timeout=None):
+            for thread in self._threads:
+                thread.join(timeout)
+
+        def _watch(self, event_handler, path, recursive):
+            from watchfiles import Change, watch
+
+            for changes in watch(
+                path, recursive=recursive, stop_event=self._stop_event
+            ):
+                for change, changed_path in changes:
+                    changed_path = str(changed_path)
+                    if change == Change.added:
+                        event_handler.on_created(
+                            _WatchfilesEvent(
+                                changed_path, Path(changed_path).is_dir()
+                            )
+                        )
+                    elif change == Change.deleted:
+                        event_handler.on_deleted(_WatchfilesEvent(changed_path))
+
+    PollingObserver = _WatchfilesObserver
 
 state_lock = threading.Lock()
 deletion_queue_lock = threading.Lock()
@@ -209,7 +266,7 @@ class RemoveLink(_PluginBase):
     # 插件图标
     plugin_icon = "Ombi_A.png"
     # 插件版本
-    plugin_version = "2.12"
+    plugin_version = "2.13"
     # 插件作者
     plugin_author = "DzAvril"
     # 作者主页
