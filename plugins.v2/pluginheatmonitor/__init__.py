@@ -53,7 +53,7 @@ class PluginHeatMonitor(_PluginBase, MCPDecoratorMixin):
     plugin_name = "插件热度监控"
     plugin_desc = "监控已安装的下载量热度，支持日历热力图可视化"
     plugin_icon = "https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/main/icons/heatmonitor.png"
-    plugin_version = "1.7"
+    plugin_version = "1.8"
     plugin_author = "DzAvril"
     author_url = "https://github.com/DzAvril"
     plugin_config_prefix = "pluginheatmonitor_"
@@ -246,6 +246,16 @@ class PluginHeatMonitor(_PluginBase, MCPDecoratorMixin):
                 return name, icon
 
         return plugin_id, "mdi-puzzle"
+
+    def _get_plugin_desc(self, plugin_id: str) -> str:
+        """获取插件描述"""
+        plugins = self._get_cached_plugins()
+
+        for plugin in plugins:
+            if plugin.id == plugin_id:
+                return plugin.plugin_desc or ""
+
+        return ""
 
     def _get_plugin_icon_url(self, plugin) -> str:
         """获取插件图标URL"""
@@ -1171,6 +1181,7 @@ class PluginHeatMonitor(_PluginBase, MCPDecoratorMixin):
                 history_data = self.get_data(history_key) or {}
 
                 plugin_name, plugin_icon = self._get_plugin_info(plugin_id)
+                plugin_desc = self._get_plugin_desc(plugin_id)
                 current_downloads = current_stats.get(plugin_id, 0)
                 last_notification_downloads = history_data.get("last_notification_downloads", 0)
                 increment_since_last = current_downloads - last_notification_downloads
@@ -1196,8 +1207,10 @@ class PluginHeatMonitor(_PluginBase, MCPDecoratorMixin):
                     "icon": plugin_icon,
                     "downloads": current_downloads,
                     "increment_since_last": increment_since_last,
+                    "download_increment": config.get("download_increment", self.DEFAULT_INCREMENT),
                     "daily_growth": today_growth,
-                    "last_check": global_last_check_time
+                    "last_check": global_last_check_time,
+                    "desc": plugin_desc
                 })
 
             return {

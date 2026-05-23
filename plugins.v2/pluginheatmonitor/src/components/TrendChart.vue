@@ -1,33 +1,26 @@
 <template>
   <div class="trend-chart">
-    <div class="chart-header mb-3">
+    <div v-if="!hideFilter" class="chart-header mb-3">
       <div class="d-flex align-center justify-end">
-        <v-chip
-          v-if="totalDataPoints > 0"
-          color="info"
-          size="small"
-          variant="tonal"
-          class="mr-2"
-        >
-          {{ totalDataPoints }} 天数据
-        </v-chip>
         <v-btn-toggle
-          v-model="timeRange"
+          v-model="localTimeRange"
           color="primary"
           size="small"
           variant="outlined"
           mandatory
+          density="compact"
+          class="trend-time-toggle"
         >
-          <v-btn value="30" size="small">30天</v-btn>
-          <v-btn value="90" size="small">90天</v-btn>
-          <v-btn value="all" size="small">全部</v-btn>
+          <v-btn value="30" size="small" class="trend-toggle-btn">30天</v-btn>
+          <v-btn value="90" size="small" class="trend-toggle-btn">90天</v-btn>
+          <v-btn value="all" size="small" class="trend-toggle-btn">全部</v-btn>
         </v-btn-toggle>
       </div>
     </div>
 
     <div class="chart-container">
-      <v-card>
-        <v-card-text>
+      <v-card variant="flat" class="bg-transparent border-0 elevation-0" style="background: transparent !important;">
+        <v-card-text class="pa-0">
           <div v-if="loading" class="text-center py-8">
             <v-progress-circular indeterminate color="primary"></v-progress-circular>
             <div class="mt-2 text-body-2">加载趋势数据...</div>
@@ -40,13 +33,8 @@
           </div>
 
           <div v-else class="chart-section">
-            <!-- ApexCharts 图表 -->
-            <div class="apex-chart-container">
-              <div
-                ref="nativeChartRef"
-                class="native-chart-container"
-                :style="{ height: chartHeight + 'px' }"
-              ></div>
+            <div class="echart-wrapper" :style="{ height: chartHeight + 'px' }">
+              <div ref="chartRef" style="width: 100%; height: 100%;"></div>
             </div>
           </div>
         </v-card-text>
@@ -57,7 +45,8 @@
 
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
-import ApexCharts from 'apexcharts'
+import { useTheme } from 'vuetify'
+import * as echarts from 'echarts'
 
 const props = defineProps({
   api: {
@@ -78,17 +67,49 @@ const props = defineProps({
   dayData: {
     type: Object,
     default: () => ({})
+  },
+  timeRange: {
+    type: String,
+    default: '30'
+  },
+  hideFilter: {
+    type: Boolean,
+    default: false
   }
+})
+
+const theme = useTheme()
+const isDark = computed(() => {
+  // MoviePilot 可能会在 html element 设置 data-theme
+  return document.documentElement.getAttribute('data-theme') === 'dark' || theme.global.name.value === 'dark'
 })
 
 // 状态
 const loading = ref(false)
-const timeRange = ref('30')
-const nativeChartRef = ref(null)
-const nativeChart = ref(null)
+const localTimeRange = ref(props.timeRange)
+const chartRef = ref(null)
+let chartInstance = null
+
+watch(() => props.timeRange, (newVal) => {
+  localTimeRange.value = newVal
+})
 
 // 响应式图表高度
-const chartHeight = ref(400)
+ const chartHeight = ref(240)
+
+const updateChartHeight = () => {
+  const width = window.innerWidth
+  if (width < 600) {
+    chartHeight.value = 180
+  } else if (width < 960) {
+    chartHeight.value = 210
+  } else {
+    chartHeight.value = 240
+  }
+  if (chartInstance) {
+    chartInstance.resize()
+  }
+}
 
 // 计算属性
 const hasData = computed(() => {
@@ -107,18 +128,7 @@ const hasData = computed(() => {
   return false
 })
 
-const totalDataPoints = computed(() => {
-  if (props.pluginData) {
-    return Object.keys(props.pluginData.daily_downloads || {}).length
-  } else if (props.allPluginsData.length > 0) {
-    const counts = props.allPluginsData.map(plugin =>
-      Object.keys(plugin.daily_downloads || {}).length
-    )
-    return counts.length > 0 ? Math.max(...counts) : 0
-  } else {
-    return Object.keys(props.dayData).length
-  }
-})
+
 
 // 辅助函数：处理新旧数据格式
 function getDayValue(dayData) {
@@ -197,272 +207,198 @@ function processDayData(dayData) {
   return { chartData }
 }
 
-// ApexCharts 配置
-const chartOptions = computed(() => {
-  const colors = ['#1976d2', '#388e3c', '#f57c00', '#d32f2f', '#7b1fa2', '#00796b']
+// 统一色阶调色盘 (符合 tokens.css 风格)
+const CHART_COLORS = [
+  '#3b82f6', // 经典蓝
+  '#10b981', // 增长绿
+  '#f59e0b', // 橙黄
+  '#ef4444', // 警示红
+  '#8b5cf6', // 优雅紫
+  '#ec4899', // 玫瑰粉
+  '#06b6d4'  // 青蓝
+]
 
-  // 根据时间范围和屏幕尺寸动态调整标签策略
-  const getTickAmount = () => {
-    const range = timeRange.value
-    const isMobile = window.innerWidth < 600
-
-    if (isMobile) {
-      // 移动端减少标签数量
-      if (range === '30') return 4
-      if (range === '90') return 5
-      return 6
-    } else {
-      // 桌面端
-      if (range === '30') return 6
-      if (range === '90') return 9
-      return undefined // 全部时间让ApexCharts自动决定
+// 渲染 ECharts 图表
+const renderChart = async () => {
+  await nextTick()
+  if (!chartRef.value || !hasData.value) {
+    if (chartInstance) {
+      chartInstance.dispose()
+      chartInstance = null
     }
+    return
   }
 
-  return {
-    chart: {
-      type: 'line',
-      height: chartHeight.value,
-      zoom: {
-        enabled: true
-      },
-      toolbar: {
-        show: true,
-        tools: {
-          download: true,
-          selection: true,
-          zoom: true,
-          zoomin: true,
-          zoomout: true,
-          pan: true,
-          reset: true
-        }
-      },
-      animations: {
-        enabled: true,
-        easing: 'easeinout',
-        speed: 800
-      }
-    },
-    colors: colors,
-    dataLabels: {
-      enabled: false
-    },
-    stroke: {
-      curve: 'smooth',
-      width: 2
-    },
-    title: {
-      text: '',
-      align: 'left'
-    },
-    grid: {
-      borderColor: '#e7e7e7',
-      row: {
-        colors: ['#f3f3f3', 'transparent'],
-        opacity: 0.5
-      }
-    },
-    markers: {
-      size: 4,
-      colors: colors,
-      strokeColors: '#fff',
-      strokeWidth: 2,
-      hover: {
-        size: 6
-      }
-    },
-    xaxis: {
-      type: 'datetime',
-      labels: {
-        format: 'MM/dd',
-        // 自动调整标签数量，避免重叠
-        maxHeight: 120,
-        rotate: window.innerWidth < 600 ? -60 : -45, // 移动端更大的旋转角度
-        rotateAlways: false,
-        hideOverlappingLabels: true,
-        // 根据数据点数量动态调整显示的标签数量
-        showDuplicates: false
-      },
-      // 根据时间范围动态调整刻度数量
-      tickAmount: getTickAmount(),
-      axisTicks: {
-        show: true
-      },
-      axisBorder: {
-        show: true
-      }
-    },
-    yaxis: {
-      title: {
-        text: '下载量'
-      },
-      min: 0
-    },
-    legend: {
-      position: 'top',
-      horizontalAlign: 'left'
-    },
-    tooltip: {
-      shared: true,
-      intersect: false,
-      x: {
-        format: 'yyyy-MM-dd'
-      }
-    }
-  }
-})
-
-// ApexCharts 系列数据
-const chartSeries = computed(() => {
-  if (!hasData.value) {
-    return []
+  if (!chartInstance) {
+    chartInstance = echarts.init(chartRef.value)
   }
 
   const series = []
-  const allDates = new Set()
-
   try {
     if (props.pluginData) {
       // 单插件模式
       const { chartData } = processPluginData(props.pluginData)
-
       if (chartData.length > 0) {
-        const data = chartData.map(item => ({
-          x: new Date(item.date).getTime(),
-          y: item.value
-        }))
-
         series.push({
           name: props.pluginData.plugin_name || '插件下载量',
-          data: data
+          data: chartData.map(item => [new Date(item.date).getTime(), item.value])
         })
       }
     } else if (props.allPluginsData.length > 0) {
       // 多插件模式
       props.allPluginsData.forEach((plugin, index) => {
         const { chartData } = processPluginData(plugin)
-
         if (chartData.length > 0) {
-          chartData.forEach(item => allDates.add(item.date))
-
-          const data = chartData.map(item => ({
-            x: new Date(item.date).getTime(),
-            y: item.value
-          }))
-
           series.push({
             name: plugin.plugin_name || `插件${index + 1}`,
-            data: data
+            data: chartData.map(item => [new Date(item.date).getTime(), item.value])
           })
         }
       })
     } else if (Object.keys(props.dayData).length > 0) {
       // Dashboard模式 - 全局日数据
       const { chartData } = processDayData(props.dayData)
-
       if (chartData.length > 0) {
-        const data = chartData.map(item => ({
-          x: new Date(item.date).getTime(),
-          y: item.value
-        }))
-
         series.push({
           name: '全局下载量',
-          data: data
+          data: chartData.map(item => [new Date(item.date).getTime(), item.value])
         })
       }
     }
 
-    // 处理时间范围过滤
-    if (timeRange.value !== 'all' && series.length > 0) {
-      const days = parseInt(timeRange.value)
-      const cutoffDate = new Date()
-      cutoffDate.setDate(cutoffDate.getDate() - days)
-      const cutoffTime = cutoffDate.getTime()
-
+    // 时间范围过滤
+    if (localTimeRange.value !== 'all' && series.length > 0) {
+      const days = parseInt(localTimeRange.value)
+      const cutoffTime = new Date().getTime() - days * 24 * 60 * 60 * 1000
       series.forEach(s => {
-        s.data = s.data.filter(point => point.x >= cutoffTime)
+        s.data = s.data.filter(point => point[0] >= cutoffTime)
       })
     }
-
-    return series
   } catch (error) {
-    console.error('❌ 生成 ApexCharts 系列数据时出错:', error)
-    return []
+    console.error('❌ ECharts 数据序列构建失败:', error)
   }
-})
 
-// 响应式处理
-const updateChartHeight = () => {
-  const width = window.innerWidth
-  if (width < 600) {
-    chartHeight.value = 300
-  } else if (width < 960) {
-    chartHeight.value = 350
-  } else {
-    chartHeight.value = 400
+  // 根据当前暗色/亮色主题设定色彩配置
+  const dark = isDark.value
+  const labelColor = dark ? '#94a3b8' : '#64748b'
+  const splitLineColor = dark ? '#1e293b' : '#f1f5f9'
+  const axisLineColor = dark ? '#334155' : '#cbd5e1'
+
+  const seriesList = series.map((s, index) => ({
+    name: s.name,
+    type: 'line',
+    smooth: true,
+    symbol: 'circle',
+    symbolSize: 6,
+    showSymbol: false,
+    lineStyle: { width: 3 },
+    itemStyle: { color: CHART_COLORS[index % CHART_COLORS.length] },
+    data: s.data
+  }))
+
+  const option = {
+    backgroundColor: 'transparent',
+    tooltip: {
+      trigger: 'axis',
+      appendToBody: true,
+      backgroundColor: dark ? 'rgba(30, 41, 59, 0.95)' : 'rgba(255, 255, 255, 0.95)',
+      borderColor: dark ? '#334155' : '#e5e7eb',
+      textStyle: { color: dark ? '#f3f4f6' : '#1f2937', fontSize: 12 },
+      padding: 10,
+      extraCssText: `box-shadow: 0 4px 6px -1px rgba(0, 0, 0, ${dark ? '0.4' : '0.1'}); border-radius: 8px;`,
+      formatter: function(params) {
+        if (!params || !params.length) return ''
+        
+        const dateVal = params[0].value[0]
+        const date = new Date(dateVal)
+        const dateStr = date.getFullYear() + '-' +
+                        String(date.getMonth() + 1).padStart(2, '0') + '-' +
+                        String(date.getDate()).padStart(2, '0')
+        
+        let html = `<div style="font-weight: 600; margin-bottom: 6px; color: ${dark ? '#f3f4f6' : '#1f2937'}">${dateStr}</div>`
+        params.forEach(param => {
+          const val = param.value[1]
+          const name = param.seriesName
+          const color = param.color
+          html += `
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; margin-top:3px;">
+              <div style="display:flex; align-items:center;">
+                <span style="display:inline-block;margin-right:6px;border-radius:50%;width:8px;height:8px;background-color:${color};"></span>
+                <span style="color: ${dark ? '#94a3b8' : '#4b5563'}">${name}</span>
+              </div>
+              <span style="font-weight:700; color: ${dark ? '#f3f4f6' : '#1f2937'}">${val.toLocaleString()} 下载</span>
+            </div>`
+        })
+        return html
+      }
+    },
+    grid: {
+      left: '2%',
+      right: '3%',
+      bottom: window.innerWidth < 600 ? '18%' : '10%',
+      top: '8%',
+      containLabel: true
+    },
+    legend: {
+      show: series.length > 0,
+      bottom: window.innerWidth < 600 ? -2 : 0,
+      type: 'scroll',
+      icon: 'roundRect',
+      itemWidth: 12,
+      itemHeight: 8,
+      textStyle: { fontSize: 11, color: labelColor }
+    },
+    xAxis: {
+      type: 'time',
+      boundaryGap: false,
+      axisLine: { lineStyle: { color: axisLineColor } },
+      axisLabel: {
+        color: labelColor,
+        fontSize: 10,
+        formatter: function(value) {
+          const date = new Date(value)
+          return String(date.getMonth() + 1).padStart(2, '0') + '/' + String(date.getDate()).padStart(2, '0')
+        }
+      },
+      splitLine: { show: false }
+    },
+    yAxis: {
+      type: 'value',
+      nameTextStyle: { color: labelColor },
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { color: labelColor, fontSize: 10 },
+      splitLine: { lineStyle: { type: 'dashed', color: splitLineColor } },
+      min: 0
+    },
+    series: seriesList
   }
+
+  chartInstance.setOption(option, true)
 }
 
-// 监听时间范围变化
-watch(timeRange, () => {
-  // 时间范围变化时，图表会自动重新渲染
-})
-
-// 监听图表配置变化
-watch([chartOptions, chartSeries], async ([newOptions, newSeries]) => {
-  // 如果有数据，重新渲染原生图表
-  if (hasData.value && newSeries.length > 0) {
-    await nextTick()
-    await renderNativeChart()
+// 监听数据、过滤时间、主题状态变化以重绘
+watch([isDark, () => props.pluginData, () => props.allPluginsData, () => props.dayData, localTimeRange], () => {
+  if (chartInstance) {
+    renderChart()
   }
 }, { deep: true })
 
-// 渲染原生 ApexCharts
-const renderNativeChart = async () => {
-  if (!nativeChartRef.value || !hasData.value) {
-    return
-  }
-
-  try {
-    // 销毁现有图表
-    if (nativeChart.value) {
-      nativeChart.value.destroy()
-      nativeChart.value = null
-    }
-
-    // 创建新图表
-    const options = {
-      ...chartOptions.value,
-      series: chartSeries.value
-    }
-
-    nativeChart.value = new ApexCharts(nativeChartRef.value, options)
-    await nativeChart.value.render()
-  } catch (error) {
-    console.error('❌ 渲染原生图表失败:', error)
-  }
-}
-
-// 生命周期
-onMounted(async () => {
+onMounted(() => {
   updateChartHeight()
   window.addEventListener('resize', updateChartHeight)
-
-  // 延迟渲染图表
-  setTimeout(async () => {
-    await renderNativeChart()
-  }, 1000)
+  
+  // 延迟微调，确保容器容器高度在首屏计算完毕
+  nextTick(() => {
+    setTimeout(renderChart, 100)
+  })
 })
 
 onUnmounted(() => {
   window.removeEventListener('resize', updateChartHeight)
-
-  // 清理原生图表
-  if (nativeChart.value) {
-    nativeChart.value.destroy()
-    nativeChart.value = null
+  if (chartInstance) {
+    chartInstance.dispose()
+    chartInstance = null
   }
 })
 </script>
@@ -497,23 +433,27 @@ onUnmounted(() => {
   }
 }
 
-/* ApexCharts 容器样式 */
-.apex-chart-container {
+.echart-wrapper {
   width: 100%;
-  overflow: hidden;
+  position: relative;
 }
 
-.native-chart-container {
-  width: 100%;
-  min-height: 350px;
+.trend-data-chip {
+  height: 20px !important;
+  font-size: 10px !important;
+  font-weight: 600 !important;
+  padding: 0 8px !important;
 }
 
-/* 确保 ApexCharts 不会溢出 */
-:deep(.apexcharts-canvas) {
-  width: 100% !important;
+.trend-time-toggle {
+  height: 28px !important;
+  border-radius: 6px !important;
 }
 
-:deep(.apexcharts-svg) {
-  width: 100% !important;
+.trend-toggle-btn {
+  height: 28px !important;
+  min-height: 28px !important;
+  font-size: 11px !important;
+  padding: 0 8px !important;
 }
 </style>

@@ -154,38 +154,17 @@ function getDayLevel(downloads) {
 
 // 获取蓝色系颜色（年份）
 function getBlueColor(level) {
-  const colors = {
-    0: '#e3f2fd',  // 无数据 - 浅蓝
-    1: '#bbdefb',  // 少量 - 淡蓝
-    2: '#64b5f6',  // 一般 - 中蓝
-    3: '#2196f3',  // 较多 - 蓝色
-    4: '#1565c0'   // 很多 - 深蓝
-  }
-  return colors[level] || colors[0]
+  return `var(--heat-year-${level})`
 }
 
 // 获取橙色系颜色（月份）
 function getOrangeColor(level) {
-  const colors = {
-    0: '#fff3e0',  // 无数据 - 浅橙
-    1: '#ffcc80',  // 少量 - 淡橙
-    2: '#ffb74d',  // 一般 - 中橙
-    3: '#ff9800',  // 较多 - 橙色
-    4: '#e65100'   // 很多 - 深橙
-  }
-  return colors[level] || colors[0]
+  return `var(--heat-month-${level})`
 }
 
 // 获取绿色系颜色（天数）
 function getGreenColor(level) {
-  const colors = {
-    0: '#ebedf0',  // 无数据 - 灰色
-    1: '#c6e48b',  // 少量 - 浅绿
-    2: '#7bc96f',  // 一般 - 中绿
-    3: '#239a3b',  // 较多 - 绿色
-    4: '#196127'   // 很多 - 深绿
-  }
-  return colors[level] || colors[0]
+  return `var(--heat-day-${level})`
 }
 
 // 获取年份单元格样式
@@ -291,17 +270,16 @@ function selectMonth(month) {
 
 .heatmap-cell.selected {
   transform: scale(1.3);
-  box-shadow: 0 0 0 2px #1976d2;
   z-index: 20;
   position: relative;
 }
 
 .year-cell.selected {
-  box-shadow: 0 0 0 2px #1976d2;
+  box-shadow: 0 0 0 2px var(--heat-year-4);
 }
 
 .month-cell.selected {
-  box-shadow: 0 0 0 2px #ff9800;
+  box-shadow: 0 0 0 2px var(--heat-month-4);
 }
 
 /* 响应式设计 */

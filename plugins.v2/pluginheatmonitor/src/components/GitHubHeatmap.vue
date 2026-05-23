@@ -1,20 +1,6 @@
 <template>
   <div class="github-heatmap">
-    <!-- 年份选择器 -->
-    <div class="mb-4">
-      <v-chip-group v-model="selectedYear" mandatory>
-        <v-chip
-          v-for="year in availableYears"
-          :key="year"
-          :value="year"
-          size="small"
-          variant="outlined"
-          color="primary"
-        >
-          {{ year }}
-        </v-chip>
-      </v-chip-group>
-    </div>
+
 
     <!-- 多个插件的热力图 -->
     <div v-if="pluginHeatmaps.length > 0" class="heatmaps-container">
@@ -24,11 +10,11 @@
         class="plugin-heatmap-section mb-6"
       >
         <!-- 插件标题 -->
-        <div class="plugin-header mb-3">
+        <div v-if="!hideHeader" class="plugin-header mb-3">
           <div class="d-flex align-center justify-space-between">
             <div class="d-flex align-center">
               <v-avatar size="32" class="mr-3">
-                <v-img :src="getPluginIcon(pluginData.plugin_id)" v-if="getPluginIcon(pluginData.plugin_id)">
+                <v-img :src="getPluginIcon(pluginData.plugin_id || pluginData.id)" v-if="getPluginIcon(pluginData.plugin_id || pluginData.id)">
                   <template v-slot:placeholder>
                     <v-icon>mdi-puzzle</v-icon>
                   </template>
@@ -36,7 +22,7 @@
                 <v-icon v-else>mdi-puzzle</v-icon>
               </v-avatar>
               <div>
-                <h3 class="text-h6 font-weight-bold">{{ pluginData.plugin_name }}</h3>
+                <h3 class="text-h6 font-weight-bold">{{ pluginData.plugin_name || pluginData.name }}</h3>
                 <div class="text-caption text-medium-emphasis">
                   {{ getTotalDownloads(pluginData).toLocaleString() }} downloads in {{ selectedYear }}
                 </div>
@@ -49,8 +35,8 @@
               variant="outlined"
               prepend-icon="mdi-refresh"
               @click="showResetDialog(pluginData)"
-              :loading="resetting[pluginData.plugin_id]"
-              :disabled="resetting[pluginData.plugin_id]"
+              :loading="resetting[pluginData.plugin_id || pluginData.id]"
+              :disabled="resetting[pluginData.plugin_id || pluginData.id]"
             >
               重置数据
             </v-btn>
@@ -59,42 +45,43 @@
 
         <!-- GitHub风格热力图 -->
         <div class="github-heatmap-wrapper">
-          <!-- 月份标签 -->
-          <div class="month-labels">
-            <span
-              v-for="(month, index) in getMonthLabels(pluginData)"
-              :key="index"
-              class="month-label"
-              :style="{ left: month.position + 'px' }"
-            >
-              {{ month.name }}
-            </span>
-          </div>
-
-          <!-- 主要网格区域 -->
-          <div class="heatmap-main">
-            <!-- 星期标签 -->
-            <div class="weekday-labels">
-              <span class="weekday-label" style="grid-row: 2;">Mon</span>
-              <span class="weekday-label" style="grid-row: 4;">Wed</span>
-              <span class="weekday-label" style="grid-row: 6;">Fri</span>
-            </div>
-
-            <!-- 热力图方块网格 -->
-            <div class="heatmap-grid">
-              <div
-                v-for="(square, index) in getHeatmapSquares(pluginData)"
+          <div class="heatmap-inner-container">
+            <!-- 月份标签 -->
+            <div class="month-labels">
+              <span
+                v-for="(month, index) in monthLabels"
                 :key="index"
-                class="heatmap-square"
-                :class="getSquareClass(square.level, square.isHistorical, square.isOutlier)"
-                :style="getSquareStyle(square)"
-                @mouseenter="showTooltip($event, square)"
-                @mouseleave="hideTooltip"
-                @click="onSquareClick(square, pluginData)"
-              ></div>
+                class="month-label"
+                :style="{ left: `calc(${month.weekIndex} * (var(--square-size) + var(--square-gap)))` }"
+              >
+                {{ month.name }}
+              </span>
+            </div>
+
+            <!-- 主要网格区域 -->
+            <div class="heatmap-main">
+              <!-- 星期标签 -->
+              <div class="weekday-labels">
+                <span class="weekday-label" style="grid-row: 2;">Mon</span>
+                <span class="weekday-label" style="grid-row: 4;">Wed</span>
+                <span class="weekday-label" style="grid-row: 6;">Fri</span>
+              </div>
+
+              <!-- 热力图方块网格 -->
+              <div class="heatmap-grid">
+                <div
+                  v-for="(square, index) in getHeatmapSquares(pluginData)"
+                  :key="index"
+                  class="heatmap-square"
+                  :class="getSquareClass(square.level, square.isHistorical, square.isOutlier)"
+                  :style="getSquareStyle(square)"
+                  @mouseenter="showTooltip($event, square)"
+                  @mouseleave="hideTooltip"
+                  @click="onSquareClick(square, pluginData)"
+                ></div>
+              </div>
             </div>
           </div>
-
         </div>
 
         <!-- 图例 - 简化版 -->
@@ -108,6 +95,7 @@
                   :key="level"
                   class="legend-square"
                   :class="getSquareClass(level - 1)"
+                  :style="{ backgroundColor: (isDark ? HEAT_COLORS_DARK : HEAT_COLORS_LIGHT)[level - 1] }"
                 ></div>
               </div>
               <span class="legend-label">More</span>
@@ -116,7 +104,7 @@
         </div>
 
         <!-- 统计信息 -->
-        <div class="stats-container mt-4">
+        <div v-if="!hideStats" class="stats-container mt-4">
           <div class="stat-item">
             <div class="text-h6 font-weight-bold">{{ getTotalDownloads(pluginData).toLocaleString() }}</div>
             <div class="text-caption">总下载量</div>
@@ -149,13 +137,15 @@
     </div>
 
     <!-- 全局Tooltip -->
-    <div
-      v-if="tooltip.show"
-      class="heatmap-tooltip"
-      :style="tooltip.style"
-    >
-      {{ tooltip.content }}
-    </div>
+    <teleport to="body">
+      <div
+        v-if="tooltip.show"
+        class="heatmap-tooltip"
+        :style="tooltip.style"
+      >
+        {{ tooltip.content }}
+      </div>
+    </teleport>
 
     <!-- 重置确认对话框 -->
     <v-dialog v-model="resetDialog.show" max-width="500">
@@ -232,15 +222,37 @@
 
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
+import { useTheme } from 'vuetify'
 
 const props = defineProps({
   api: {
     type: Object,
     required: true
+  },
+  selectedPluginId: {
+    type: String,
+    default: ''
+  },
+  selectedYear: {
+    type: Number,
+    default: () => new Date().getFullYear()
+  },
+  hideStats: {
+    type: Boolean,
+    default: false
+  },
+  hideHeader: {
+    type: Boolean,
+    default: false
   }
 })
 
-const emit = defineEmits(['square-clicked'])
+const emit = defineEmits(['square-clicked', 'update:selectedYear', 'years-loaded'])
+
+const theme = useTheme()
+const isDark = computed(() => {
+  return document.documentElement.getAttribute('data-theme') === 'dark' || theme.global.name.value === 'dark'
+})
 
 // 辅助函数：处理新旧数据格式
 function getDayValue(dayData) {
@@ -266,8 +278,18 @@ function isOutlierData(dayData) {
 
 // 状态
 const loading = ref(false)
-const selectedYear = ref(new Date().getFullYear())
-const pluginHeatmaps = ref([])
+const currentPluginHeatmapData = ref(null)
+const selectedYear = computed({
+  get() {
+    return props.selectedYear
+  },
+  set(val) {
+    emit('update:selectedYear', val)
+  }
+})
+const pluginHeatmaps = computed(() => {
+  return currentPluginHeatmapData.value ? [currentPluginHeatmapData.value] : []
+})
 const pluginOptions = ref([])
 
 // Tooltip状态
@@ -276,6 +298,8 @@ const tooltip = reactive({
   content: '',
   style: {}
 })
+
+
 
 // 重置相关状态
 const resetting = ref({}) // 记录每个插件的重置状态
@@ -307,6 +331,11 @@ const availableYears = computed(() => {
   const yearArray = Array.from(years).sort((a, b) => b - a)
   return yearArray.length > 0 ? yearArray : [new Date().getFullYear()]
 })
+
+// 监听可用年份的变化并通知父组件
+watch(availableYears, (newYears) => {
+  emit('years-loaded', newYears)
+}, { immediate: true, deep: true })
 
 // 生成指定插件的热力图数据
 function getHeatmapSquares(pluginData) {
@@ -391,42 +420,41 @@ function getHeatmapSquares(pluginData) {
 }
 
 // 生成月份标签 - 响应式计算
-function getMonthLabels(pluginData) {
+const monthLabels = computed(() => {
   const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-
-  // 根据屏幕尺寸确定方块大小和间距 - 增大尺寸以更好利用空间
-  let squareSize = 17
-  let gap = 3
-
-  if (window.innerWidth <= 768) {
-    squareSize = 12
-    gap = 2
-  } else if (window.innerWidth <= 1200) {
-    squareSize = 15
-    gap = 2
+  const labels = []
+  const seenMonths = new Set()
+  
+  const startDate = new Date(selectedYear.value, 0, 1)
+  const firstSunday = new Date(startDate)
+  while (firstSunday.getDay() !== 0) {
+    firstSunday.setDate(firstSunday.getDate() - 1)
   }
-
-  // 热力图总共53列，12个月等分
-  const totalColumns = 53
-  const columnWidth = squareSize + gap // 每列的宽度
-  const totalWidth = totalColumns * columnWidth // 总宽度
-  const monthSpacing = totalWidth / 12 // 每个月的间距
-
-  const months = []
-  for (let i = 0; i < 12; i++) {
-    months.push({
-      name: monthNames[i],
-      position: i * monthSpacing // 简单的等分布局
-    })
+  
+  for (let w = 0; w < 53; w++) {
+    const currentSunday = new Date(firstSunday)
+    currentSunday.setDate(firstSunday.getDate() + w * 7)
+    
+    let monthIdx = currentSunday.getMonth()
+    if (currentSunday.getFullYear() < selectedYear.value) {
+      monthIdx = 0
+    }
+    
+    if (!seenMonths.has(monthIdx) && (currentSunday.getFullYear() === selectedYear.value || w === 0)) {
+      seenMonths.add(monthIdx)
+      labels.push({
+        name: monthNames[monthIdx],
+        weekIndex: w
+      })
+    }
   }
-
-  return months
-}
+  return labels
+})
 
 // 获取插件图标
 function getPluginIcon(pluginId) {
-  const plugin = pluginOptions.value.find(p => p.id === pluginId)
-  return plugin?.icon || null
+  const plugin = pluginOptions.value.find(p => (p.plugin_id === pluginId || p.id === pluginId))
+  return plugin?.plugin_icon || plugin?.icon || null
 }
 
 // 统计方法
@@ -511,6 +539,10 @@ function getTodayContribution(pluginData) {
   return 0
 }
 
+// 热力图颜色表（和 tokens.css 一致，不依赖 CSS 变量继承）
+const HEAT_COLORS_LIGHT = ['#ebedf0', '#9be9a8', '#40c463', '#30a14e', '#216e39']
+const HEAT_COLORS_DARK  = ['#2d333b', '#1a4731', '#1d6340', '#2ea043', '#3fb950']
+
 // 方法
 function getSquareClass(level, isHistorical = false, isOutlier = false) {
   const baseClass = `github-level-${level}`
@@ -523,9 +555,12 @@ function getSquareClass(level, isHistorical = false, isOutlier = false) {
 }
 
 function getSquareStyle(square) {
+  const colors = isDark.value ? HEAT_COLORS_DARK : HEAT_COLORS_LIGHT
+  const level = Math.min(square.level ?? 0, 4)
   return {
     gridColumn: square.week + 1,
-    gridRow: square.day + 1
+    gridRow: square.day + 1,
+    backgroundColor: colors[level]
   }
 }
 
@@ -583,7 +618,24 @@ function showTooltip(event, square) {
     top = mouseY + tooltipOffset
   }
 
+  // 深色/浅色模式内联样式
+  const dark = isDark.value
+  const tooltipBaseStyle = dark
+    ? {
+        background: 'rgba(30, 41, 59, 0.97)',
+        color: '#f3f4f6',
+        border: '1px solid #334155',
+        boxShadow: '0 4px 6px -1px rgba(0,0,0,0.4)'
+      }
+    : {
+        background: 'rgba(255, 255, 255, 0.97)',
+        color: '#1f2937',
+        border: '1px solid #e5e7eb',
+        boxShadow: '0 4px 6px -1px rgba(0,0,0,0.08)'
+      }
+
   tooltip.style = {
+    ...tooltipBaseStyle,
     position: 'fixed',
     left: left + 'px',
     top: top + 'px',
@@ -601,40 +653,43 @@ function onSquareClick(square, pluginData) {
   emit('square-clicked', { square, plugin: pluginData })
 }
 
-async function loadAllPluginHeatmaps() {
+async function loadHeatmapData(pluginId) {
+  if (!pluginId) {
+    currentPluginHeatmapData.value = null
+    return
+  }
   loading.value = true
   try {
-    // 获取插件列表
-    const listData = await props.api.get('plugin/PluginHeatMonitor/plugin-list')
-    if (listData && listData.status === 'success') {
-      pluginOptions.value = listData.plugins
+    // 获取插件列表以匹配 icon 和 name
+    if (pluginOptions.value.length === 0) {
+      const listData = await props.api.get('plugin/PluginHeatMonitor/plugin-list')
+      if (listData && listData.status === 'success') {
+        pluginOptions.value = listData.plugins || []
+      }
+    }
 
-      // 为所有监控的插件获取热力图数据（即使没有历史增量数据也显示）
-      const heatmapPromises = listData.plugins
-        .map(plugin =>
-          props.api.get(`plugin/PluginHeatMonitor/plugin-heatmap?plugin_id=${plugin.id}`)
-        )
-
-      const results = await Promise.all(heatmapPromises)
-      let pluginHeatmapsData = results
-        .filter(result => result && result.status === 'success')
-        .map(result => result)
-      
-      // 按照今日新增数量排序（降序）
-      pluginHeatmapsData.sort((a, b) => {
-        const todayA = getTodayContribution(a)
-        const todayB = getTodayContribution(b)
-        return todayB - todayA
-      })
-      
-      pluginHeatmaps.value = pluginHeatmapsData
+    const result = await props.api.get(`plugin/PluginHeatMonitor/plugin-heatmap?plugin_id=${pluginId}`)
+    if (result && result.status === 'success') {
+      currentPluginHeatmapData.value = result
+    } else {
+      currentPluginHeatmapData.value = null
     }
   } catch (error) {
-    console.error('加载插件热力图数据失败:', error)
+    console.error(`加载插件 ${pluginId} 热力图数据失败:`, error)
+    currentPluginHeatmapData.value = null
   } finally {
     loading.value = false
   }
 }
+
+async function loadAllPluginHeatmaps() {
+  await loadHeatmapData(props.selectedPluginId)
+}
+
+// 监听选中的插件变化
+watch(() => props.selectedPluginId, async (newId) => {
+  await loadHeatmapData(newId)
+})
 
 // 显示重置确认对话框
 function showResetDialog(pluginData) {
@@ -686,20 +741,15 @@ watch(selectedYear, () => {
 })
 
 // 窗口大小变化时重新计算
-const handleResize = () => {
-  // 触发重新渲染，让月份标签重新计算位置
-  // 这里可以通过改变一个响应式变量来触发重新渲染
-}
-
 // 初始化
 onMounted(() => {
-  loadAllPluginHeatmaps()
-  window.addEventListener('resize', handleResize)
+  if (props.selectedPluginId) {
+    loadHeatmapData(props.selectedPluginId)
+  }
 })
 
 // 清理
 onUnmounted(() => {
-  window.removeEventListener('resize', handleResize)
 })
 
 
@@ -711,6 +761,7 @@ onUnmounted(() => {
 .github-heatmap {
   max-width: 100%;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+  container-type: inline-size;
 }
 
 .heatmap-container {
@@ -734,15 +785,119 @@ onUnmounted(() => {
   background: rgb(var(--v-theme-surface));
   border: 1px solid rgb(var(--v-theme-outline-variant));
   border-radius: 6px;
-  padding: 16px;
+  padding: 12px 16px;
   width: 100%;
   max-width: 100%;
   overflow-x: auto;
 
-  /* CSS变量定义不同尺寸的参数 - 增大默认尺寸 */
-  --square-size: 17px;
+  /* CSS变量定义不同尺寸的参数 - 增大方块尺寸以填充空间 */
   --square-gap: 3px;
-  --weekday-width: 45px;
+  --weekday-width: 32px;
+  --square-size: min(20px, calc((100cqw - var(--weekday-width) - 10px - 32px - 52 * var(--square-gap)) / 53));
+}
+
+.heatmap-inner-container {
+  margin: 0 auto;
+  width: fit-content;
+  min-width: 100%;
+}
+
+@container (max-width: 880px) {
+  .github-heatmap-wrapper {
+    --square-gap: 2px;
+    --weekday-width: 28px;
+    --square-size: min(16px, calc((100cqw - var(--weekday-width) - 8px - 24px - 52 * var(--square-gap)) / 53));
+    padding: 12px;
+  }
+  .heatmap-main {
+    gap: 8px;
+  }
+  .month-labels {
+    margin-left: calc(var(--weekday-width) + 8px) !important;
+    margin-bottom: 6px !important;
+  }
+  .month-label {
+    font-size: 10px !important;
+  }
+  .weekday-label {
+    font-size: 10px !important;
+    padding-right: 4px !important;
+  }
+}
+
+@container (max-width: 750px) {
+  .github-heatmap-wrapper {
+    --square-gap: 1.5px;
+    --weekday-width: 24px;
+    --square-size: min(9px, calc((100cqw - var(--weekday-width) - 6px - 20px - 52 * var(--square-gap)) / 53));
+    padding: 10px;
+  }
+  .heatmap-main {
+    gap: 6px;
+  }
+  .month-labels {
+    margin-left: calc(var(--weekday-width) + 6px) !important;
+    margin-bottom: 4px !important;
+    height: 12px !important;
+  }
+  .month-label {
+    font-size: 9px !important;
+    line-height: 12px !important;
+  }
+  .weekday-label {
+    font-size: 9px !important;
+    padding-right: 2px !important;
+  }
+}
+
+@container (max-width: 610px) {
+  .github-heatmap-wrapper {
+    --square-gap: 1px;
+    --weekday-width: 20px;
+    --square-size: min(7.5px, calc((100cqw - var(--weekday-width) - 4px - 16px - 52 * var(--square-gap)) / 53));
+    padding: 8px;
+  }
+  .heatmap-main {
+    gap: 4px;
+  }
+  .month-labels {
+    margin-left: calc(var(--weekday-width) + 4px) !important;
+    margin-bottom: 2px !important;
+    height: 10px !important;
+  }
+  .month-label {
+    font-size: 8px !important;
+    line-height: 10px !important;
+  }
+  .weekday-label {
+    font-size: 8px !important;
+    padding-right: 1px !important;
+  }
+}
+
+@container (max-width: 500px) {
+  .github-heatmap-wrapper {
+    --square-gap: 1px;
+    --weekday-width: 16px;
+    --square-size: min(6px, calc((100cqw - var(--weekday-width) - 4px - 12px - 52 * var(--square-gap)) / 53));
+    padding: 6px;
+  }
+  .heatmap-main {
+    gap: 4px;
+  }
+  .month-labels {
+    margin-left: calc(var(--weekday-width) + 4px) !important;
+    margin-bottom: 2px !important;
+    height: 10px !important;
+  }
+  .month-label {
+    font-size: 7px !important;
+    line-height: 10px !important;
+  }
+  .weekday-label {
+    font-size: 7px !important;
+    padding-right: 1px !important;
+  }
 }
 
 /* 月份标签 - 增强可见性 */
@@ -814,49 +969,51 @@ onUnmounted(() => {
   outline-offset: -1px;
 }
 
-/* GitHub精确颜色等级 - 浅色主题 */
+/* GitHub精确颜色等级 - 使用全局 CSS 变量 */
 .github-level-0 {
-  background-color: #ebedf0;
+  background-color: var(--heat-level-0);
 }
 
 .github-level-1 {
-  background-color: #9be9a8;
+  background-color: var(--heat-level-1);
 }
 
 .github-level-2 {
-  background-color: #40c463;
+  background-color: var(--heat-level-2);
 }
 
 .github-level-3 {
-  background-color: #30a14e;
+  background-color: var(--heat-level-3);
 }
 
 .github-level-4 {
-  background-color: #216e39;
+  background-color: var(--heat-level-4);
 }
 
 /* 历史数据特殊样式 - 添加边框区分 */
 .historical-data {
-  border: 2px solid #ff9800 !important;
+  border: 2px solid var(--heat-warning) !important;
   border-radius: 4px !important;
   outline: none !important;
 }
 
 .historical-data:hover {
-  border: 2px solid #f57c00 !important;
+  border: 2px solid var(--heat-warning) !important;
+  filter: brightness(1.1);
   outline: none !important;
 }
 
 /* 异常值数据特殊样式 - 添加虚线边框区分 */
 .outlier-data {
-  border: 2px dashed #e91e63 !important;
+  border: 2px dashed var(--heat-danger) !important;
   border-radius: 4px !important;
   outline: none !important;
   opacity: 0.7;
 }
 
 .outlier-data:hover {
-  border: 2px dashed #c2185b !important;
+  border: 2px dashed var(--heat-danger) !important;
+  filter: brightness(1.1);
   outline: none !important;
   opacity: 0.9;
 }
@@ -875,60 +1032,7 @@ onUnmounted(() => {
   outline: 1px solid rgba(240, 246, 252, 0.3);
 }
 
-.v-theme--dark .github-level-0 {
-  background-color: #161b22;
-}
-
-.v-theme--dark .github-level-1 {
-  background-color: #0e4429;
-}
-
-.v-theme--dark .github-level-2 {
-  background-color: #006d32;
-}
-
-.v-theme--dark .github-level-3 {
-  background-color: #26a641;
-}
-
-.v-theme--dark .github-level-4 {
-  background-color: #39d353;
-}
-
-/* 深色主题下的历史数据样式 */
-.v-theme--dark .historical-data {
-  border: 2px solid #ffb74d !important;
-  border-radius: 4px !important;
-  outline: none !important;
-}
-
-.v-theme--dark .historical-data:hover {
-  border: 2px solid #ffa726 !important;
-  outline: none !important;
-}
-
-/* 自定义Tooltip - 优化样式和可见性 */
-.heatmap-tooltip {
-  background: rgba(0, 0, 0, 0.9);
-  color: white;
-  padding: 6px 10px;
-  border-radius: 6px;
-  font-size: 12px;
-  font-weight: 500;
-  white-space: nowrap;
-  pointer-events: none;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  backdrop-filter: blur(4px);
-  transition: opacity 0.2s ease;
-}
-
-.v-theme--dark .heatmap-tooltip {
-  background: rgba(255, 255, 255, 0.95);
-  color: #1a1a1a;
-  border: 1px solid rgba(0, 0, 0, 0.1);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
-}
+/* 自定义Tooltip已移至全局 styles/tokens.css 中定义，以支持 Teleport 渲染与主题色适配 */
 
 /* 图例样式 - 简化版 */
 .heatmap-legend {
@@ -993,37 +1097,6 @@ onUnmounted(() => {
 
 /* 响应式设计 */
 @media (max-width: 1200px) {
-  .github-heatmap-wrapper {
-    --square-size: 15px;
-    --square-gap: 2px;
-    --weekday-width: 40px;
-  }
-
-  .heatmap-grid {
-    grid-template-columns: repeat(53, var(--square-size));
-    grid-template-rows: repeat(7, var(--square-size));
-    gap: var(--square-gap);
-  }
-
-  .heatmap-square {
-    width: var(--square-size);
-    height: var(--square-size);
-    border-radius: 2px;
-  }
-
-  .weekday-labels {
-    grid-template-rows: repeat(7, var(--square-size));
-    gap: var(--square-gap);
-    width: var(--weekday-width);
-  }
-
-  .weekday-label {
-    font-size: 10px;
-    line-height: var(--square-size);
-    color: rgb(var(--v-theme-on-surface));
-    font-weight: 500;
-  }
-
   .stats-container {
     gap: 12px;
   }
@@ -1035,39 +1108,6 @@ onUnmounted(() => {
 }
 
 @media (max-width: 768px) {
-  .github-heatmap-wrapper {
-    --square-size: 12px;
-    --square-gap: 2px;
-    --weekday-width: 35px;
-    min-width: 100%;
-    overflow-x: auto;
-  }
-
-  .heatmap-grid {
-    grid-template-columns: repeat(53, var(--square-size));
-    grid-template-rows: repeat(7, var(--square-size));
-    gap: var(--square-gap);
-  }
-
-  .heatmap-square {
-    width: var(--square-size);
-    height: var(--square-size);
-    border-radius: 2px;
-  }
-
-  .weekday-labels {
-    grid-template-rows: repeat(7, var(--square-size));
-    gap: var(--square-gap);
-    width: var(--weekday-width);
-  }
-
-  .weekday-label {
-    font-size: 9px;
-    line-height: var(--square-size);
-    color: rgb(var(--v-theme-on-surface));
-    font-weight: 500;
-  }
-
   .stats-container {
     gap: 8px;
     justify-content: center;

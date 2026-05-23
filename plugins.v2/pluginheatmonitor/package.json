@@ -5,18 +5,22 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:web": "vite build",
+    "build": "npm run build:web && node build-zip.js"
   },
   "dependencies": {
     "@vueuse/core": "^12.4.0",
     "apexcharts": "^4.0.0",
+    "echarts": "^5.6.0",
+    "tslib": "^2.3.0",
     "vue": "^3.5.13",
     "vuetify": "3.7.3"
   },
   "devDependencies": {
     "@originjs/vite-plugin-federation": "^1.4.1",
     "@vitejs/plugin-vue": "^4.4.0",
+    "archiver": "^7.0.1",
     "vite": "^5.4.11"
   }
 }
