@@ -2,11 +2,11 @@ const currentImports = {};
       const exportSet = new Set(['Module', '__esModule', 'default', '_export_sfc']);
       let moduleMap = {
 "./Page":()=>{
-      dynamicLoadingCss(["__federation_expose_Page-nmFdbyWV.css","_plugin-vue_export-helper-CozduE7h.css","TrendChart-USa6ouDf.css"], false, './Page');
-      return __federation_import('./__federation_expose_Page-DaTK63wu.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},
+      dynamicLoadingCss(["__federation_expose_Page-BDE7vwrO.css","_plugin-vue_export-helper-CozduE7h.css","TrendChart-USa6ouDf.css"], false, './Page');
+      return __federation_import('./__federation_expose_Page-BJPdYAgK.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},
 "./Config":()=>{
-      dynamicLoadingCss(["__federation_expose_Config-BaT2HBrf.css","_plugin-vue_export-helper-CozduE7h.css"], false, './Config');
-      return __federation_import('./__federation_expose_Config-CscqgsVc.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},
+      dynamicLoadingCss(["__federation_expose_Config-BfXz0qRA.css","_plugin-vue_export-helper-CozduE7h.css"], false, './Config');
+      return __federation_import('./__federation_expose_Config-Dfg7CCXq.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},
 "./Dashboard":()=>{
       dynamicLoadingCss(["__federation_expose_Dashboard--ehrpgAe.css","_plugin-vue_export-helper-CozduE7h.css","TrendChart-USa6ouDf.css"], false, './Dashboard');
       return __federation_import('./__federation_expose_Dashboard-D6YNmdbJ.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},};

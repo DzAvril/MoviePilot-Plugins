@@ -194,6 +194,9 @@
         <StatusFooter
           :last-update-time="lastUpdateTime"
           :refreshing="refreshing"
+          :version="pluginVersion || undefined"
+          :running="running"
+          @run-once="runOnce"
         />
       </v-col>
     </v-row>
@@ -231,6 +234,8 @@ const totalGrowth = ref(0)
 const lastUpdateTime = ref('')
 const selectedPlugin = ref(null)
 const sortBy = ref('downloads')
+const pluginVersion = ref('')
+const running = ref(false)
 
 const pluginDetailRef = ref(null)
 
@@ -292,7 +297,7 @@ function goToConfig() {
 function handleSquareClicked(data) {
   if (data.square && data.plugin) {
     const date = data.square.date.toLocaleDateString('zh-CN')
-    const message = `${data.plugin.plugin_name} - ${date}: +${data.square.value} downloads`
+    const message = `${data.plugin.plugin_name || data.plugin.name} - ${date}: +${data.square.value} downloads`
     showMessage(message, 'info')
   }
 }
@@ -311,6 +316,7 @@ async function loadData() {
       totalDownloads.value = statusData.total_downloads || 0
       lastUpdateTime.value = statusData.global_last_check_time || ''
       totalGrowth.value = statusData.total_daily_growth || 0
+      pluginVersion.value = statusData.version || ''
 
       if (monitoredPlugins.value.length > 0) {
         const stillExists = selectedPlugin.value && monitoredPlugins.value.some(
@@ -348,6 +354,26 @@ async function refreshData() {
     showMessage('刷新失败', 'error')
   } finally {
     refreshing.value = false
+  }
+}
+
+async function runOnce() {
+  running.value = true
+  try {
+    const response = await props.api.post('plugin/PluginHeatMonitor/run_once')
+    if (response && response.status === 'success') {
+      showMessage('已触发立即运行')
+      setTimeout(() => {
+        refreshData()
+      }, 1500)
+    } else {
+      showMessage(response?.message || '触发失败', 'error')
+    }
+  } catch (error) {
+    console.error('触发立即运行失败:', error)
+    showMessage('触发立即运行失败', 'error')
+  } finally {
+    running.value = false
   }
 }
 

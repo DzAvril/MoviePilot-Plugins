@@ -693,8 +693,8 @@ watch(() => props.selectedPluginId, async (newId) => {
 
 // 显示重置确认对话框
 function showResetDialog(pluginData) {
-  resetDialog.pluginId = pluginData.plugin_id
-  resetDialog.pluginName = pluginData.plugin_name
+  resetDialog.pluginId = pluginData.plugin_id || pluginData.id
+  resetDialog.pluginName = pluginData.plugin_name || pluginData.name
   resetDialog.currentDownloads = pluginData.current_downloads || 0
   resetDialog.show = true
 }
