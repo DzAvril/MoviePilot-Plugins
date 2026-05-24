@@ -244,15 +244,23 @@ const _sfc_main$3 = {
   author: {
     type: String,
     default: 'DzAvril'
+  },
+  running: {
+    type: Boolean,
+    default: false
   }
 },
-  setup(__props) {
+  emits: ['run-once'],
+  setup(__props, { emit: __emit }) {
+
+const emit = __emit;
 
 
 
 return (_ctx, _cache) => {
   const _component_v_badge = _resolveComponent$3("v-badge");
   const _component_v_icon = _resolveComponent$3("v-icon");
+  const _component_v_btn = _resolveComponent$3("v-btn");
   const _component_v_card = _resolveComponent$3("v-card");
 
   return (_openBlock$3(), _createBlock$3(_component_v_card, {
@@ -269,24 +277,49 @@ return (_ctx, _cache) => {
             class: "mr-2 mb-0.5"
           }, null, 8, ["color"]),
           _createElementVNode$3("span", null, [
-            _cache[0] || (_cache[0] = _createTextVNode$3(" 最后检查时间: ")),
+            _cache[1] || (_cache[1] = _createTextVNode$3(" 最后检查时间: ")),
             _createElementVNode$3("span", _hoisted_3$3, _toDisplayString$3(__props.lastUpdateTime || '未知'), 1)
           ])
         ]),
         _createElementVNode$3("div", _hoisted_4$3, [
+          _createVNode$3(_component_v_btn, {
+            variant: "text",
+            density: "comfortable",
+            size: "small",
+            color: "primary",
+            class: "run-once-btn px-2 text-caption font-weight-bold",
+            loading: __props.running,
+            onClick: _cache[0] || (_cache[0] = $event => (emit('run-once')))
+          }, {
+            default: _withCtx$3(() => [
+              _createVNode$3(_component_v_icon, {
+                size: "14",
+                class: "mr-1"
+              }, {
+                default: _withCtx$3(() => _cache[2] || (_cache[2] = [
+                  _createTextVNode$3("mdi-play-circle-outline")
+                ])),
+                _: 1,
+                __: [2]
+              }),
+              _cache[3] || (_cache[3] = _createTextVNode$3(" 立即运行一次 "))
+            ]),
+            _: 1,
+            __: [3]
+          }, 8, ["loading"]),
           _createElementVNode$3("span", _hoisted_5$3, [
             _createVNode$3(_component_v_icon, {
               size: "14",
               class: "mr-1"
             }, {
-              default: _withCtx$3(() => _cache[1] || (_cache[1] = [
+              default: _withCtx$3(() => _cache[4] || (_cache[4] = [
                 _createTextVNode$3("mdi-puzzle-outline")
               ])),
               _: 1,
-              __: [1]
+              __: [4]
             }),
             _createElementVNode$3("span", null, "pluginheatmonitor v" + _toDisplayString$3(__props.version), 1),
-            _cache[2] || (_cache[2] = _createElementVNode$3("span", { class: "mx-1.5" }, "•", -1)),
+            _cache[5] || (_cache[5] = _createElementVNode$3("span", { class: "mx-1.5" }, "•", -1)),
             _createElementVNode$3("span", null, "By " + _toDisplayString$3(__props.author), 1)
           ])
         ])
@@ -298,7 +331,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const StatusFooter = /*#__PURE__*/_export_sfc(_sfc_main$3, [['__scopeId',"data-v-e807ebf2"]]);
+const StatusFooter = /*#__PURE__*/_export_sfc(_sfc_main$3, [['__scopeId',"data-v-1cbd4639"]]);
 
 const {renderList:_renderList$2,Fragment:_Fragment$2,openBlock:_openBlock$2,createElementBlock:_createElementBlock$2,createTextVNode:_createTextVNode$2,resolveComponent:_resolveComponent$2,withCtx:_withCtx$2,createVNode:_createVNode$2,createBlock:_createBlock$2,createCommentVNode:_createCommentVNode$2,toDisplayString:_toDisplayString$2,createElementVNode:_createElementVNode$2,normalizeStyle:_normalizeStyle$1,normalizeClass:_normalizeClass$1,Teleport:_Teleport$1} = await importShared('vue');
 
@@ -826,8 +859,8 @@ watch$2(() => props.selectedPluginId, async (newId) => {
 
 // 显示重置确认对话框
 function showResetDialog(pluginData) {
-  resetDialog.pluginId = pluginData.plugin_id;
-  resetDialog.pluginName = pluginData.plugin_name;
+  resetDialog.pluginId = pluginData.plugin_id || pluginData.id;
+  resetDialog.pluginName = pluginData.plugin_name || pluginData.name;
   resetDialog.currentDownloads = pluginData.current_downloads || 0;
   resetDialog.show = true;
 }
@@ -1206,7 +1239,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const GitHubHeatmap = /*#__PURE__*/_export_sfc(_sfc_main$2, [['__scopeId',"data-v-02d361cd"]]);
+const GitHubHeatmap = /*#__PURE__*/_export_sfc(_sfc_main$2, [['__scopeId',"data-v-f7f3202c"]]);
 
 const {toDisplayString:_toDisplayString$1,createTextVNode:_createTextVNode$1,resolveComponent:_resolveComponent$1,withCtx:_withCtx$1,createVNode:_createVNode$1,createElementVNode:_createElementVNode$1,mergeProps:_mergeProps$1,renderList:_renderList$1,Fragment:_Fragment$1,openBlock:_openBlock$1,createElementBlock:_createElementBlock$1,createBlock:_createBlock$1,createCommentVNode:_createCommentVNode$1,normalizeClass:_normalizeClass,normalizeStyle:_normalizeStyle,Teleport:_Teleport} = await importShared('vue');
 
@@ -1915,7 +1948,7 @@ return (_ctx, _cache) => {
               }),
               _createVNode$1(_component_v_card_text, { class: "text-body-2 pt-2" }, {
                 default: _withCtx$1(() => [
-                  _createTextVNode$1(" 此操作将清空插件「" + _toDisplayString$1(__props.plugin.plugin_name) + "」的所有每日监控记录，以当前下载量作为新的计算基准。此操作不可逆。 ", 1)
+                  _createTextVNode$1(" 此操作将清空插件「" + _toDisplayString$1(__props.plugin.plugin_name || __props.plugin.name) + "」的所有每日监控记录，以当前下载量作为新的计算基准。此操作不可逆。 ", 1)
                 ]),
                 _: 1
               }),
@@ -1962,7 +1995,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const PluginDetail = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-d80086f7"]]);
+const PluginDetail = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-08ec4ee4"]]);
 
 const {createTextVNode:_createTextVNode,resolveComponent:_resolveComponent,withCtx:_withCtx,createVNode:_createVNode,createElementVNode:_createElementVNode,openBlock:_openBlock,createElementBlock:_createElementBlock,createCommentVNode:_createCommentVNode,toDisplayString:_toDisplayString,createBlock:_createBlock,mergeProps:_mergeProps,renderList:_renderList,Fragment:_Fragment} = await importShared('vue');
 
@@ -2048,6 +2081,8 @@ const totalGrowth = ref(0);
 const lastUpdateTime = ref('');
 const selectedPlugin = ref(null);
 const sortBy = ref('downloads');
+const pluginVersion = ref('');
+const running = ref(false);
 
 const pluginDetailRef = ref(null);
 
@@ -2120,6 +2155,7 @@ async function loadData() {
       totalDownloads.value = statusData.total_downloads || 0;
       lastUpdateTime.value = statusData.global_last_check_time || '';
       totalGrowth.value = statusData.total_daily_growth || 0;
+      pluginVersion.value = statusData.version || '';
 
       if (monitoredPlugins.value.length > 0) {
         const stillExists = selectedPlugin.value && monitoredPlugins.value.some(
@@ -2157,6 +2193,26 @@ async function refreshData() {
     showMessage('刷新失败', 'error');
   } finally {
     refreshing.value = false;
+  }
+}
+
+async function runOnce() {
+  running.value = true;
+  try {
+    const response = await props.api.post('plugin/PluginHeatMonitor/run_once');
+    if (response && response.status === 'success') {
+      showMessage('已触发立即运行');
+      setTimeout(() => {
+        refreshData();
+      }, 1500);
+    } else {
+      showMessage(response?.message || '触发失败', 'error');
+    }
+  } catch (error) {
+    console.error('触发立即运行失败:', error);
+    showMessage('触发立即运行失败', 'error');
+  } finally {
+    running.value = false;
   }
 }
 
@@ -2593,8 +2649,11 @@ return (_ctx, _cache) => {
             default: _withCtx(() => [
               _createVNode(StatusFooter, {
                 "last-update-time": lastUpdateTime.value,
-                refreshing: refreshing.value
-              }, null, 8, ["last-update-time", "refreshing"])
+                refreshing: refreshing.value,
+                version: pluginVersion.value || undefined,
+                running: running.value,
+                onRunOnce: runOnce
+              }, null, 8, ["last-update-time", "refreshing", "version", "running"])
             ]),
             _: 1
           })
@@ -2619,6 +2678,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Page = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-9f23f5b4"]]);
+const Page = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-89dc626e"]]);
 
 export { Page as default };

@@ -53,7 +53,7 @@ class PluginHeatMonitor(_PluginBase, MCPDecoratorMixin):
     plugin_name = "插件热度监控"
     plugin_desc = "监控已安装的下载量热度，支持日历热力图可视化"
     plugin_icon = "https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/main/icons/heatmonitor.png"
-    plugin_version = "1.8"
+    plugin_version = "1.8.1"
     plugin_author = "DzAvril"
     author_url = "https://github.com/DzAvril"
     plugin_config_prefix = "pluginheatmonitor_"
@@ -349,7 +349,7 @@ class PluginHeatMonitor(_PluginBase, MCPDecoratorMixin):
 
             # 获取配置
             download_increment = config.get("download_increment", 100)
-            last_notification_downloads = history_data.get("last_notification_downloads", 0)
+            last_notification_downloads = history_data.get("last_notification_downloads", current_downloads)
             last_notification_time = history_data.get("last_notification_time", time.time())
 
             logger.debug(f"检查插件 {plugin_id}：当前下载量={current_downloads}, 上次通知下载量={last_notification_downloads}, 增量阈值={download_increment}")
@@ -1046,7 +1046,7 @@ class PluginHeatMonitor(_PluginBase, MCPDecoratorMixin):
 
                 current_downloads = current_stats.get(plugin_id, 0)
                 download_increment = config.get("download_increment", self.DEFAULT_INCREMENT)
-                last_notification_downloads = history_data.get("last_notification_downloads", 0)
+                last_notification_downloads = history_data.get("last_notification_downloads", current_downloads)
                 daily_downloads = history_data.get("daily_downloads", {})
 
                 # 收集全局信息
@@ -1154,7 +1154,8 @@ class PluginHeatMonitor(_PluginBase, MCPDecoratorMixin):
                     "monitored_plugins": [],
                     "total_downloads": 0,
                     "total_daily_growth": 0,
-                    "global_last_check_time": None
+                    "global_last_check_time": None,
+                    "version": self.plugin_version
                 }
 
             plugin_helper = PluginHelper()
@@ -1167,7 +1168,8 @@ class PluginHeatMonitor(_PluginBase, MCPDecoratorMixin):
                     "monitored_plugins": [],
                     "total_downloads": 0,
                     "total_daily_growth": 0,
-                    "global_last_check_time": None
+                    "global_last_check_time": None,
+                    "version": self.plugin_version
                 }
 
             monitored_plugins = []
@@ -1183,7 +1185,7 @@ class PluginHeatMonitor(_PluginBase, MCPDecoratorMixin):
                 plugin_name, plugin_icon = self._get_plugin_info(plugin_id)
                 plugin_desc = self._get_plugin_desc(plugin_id)
                 current_downloads = current_stats.get(plugin_id, 0)
-                last_notification_downloads = history_data.get("last_notification_downloads", 0)
+                last_notification_downloads = history_data.get("last_notification_downloads", current_downloads)
                 increment_since_last = current_downloads - last_notification_downloads
 
                 # 获取当日增长量
@@ -1218,7 +1220,8 @@ class PluginHeatMonitor(_PluginBase, MCPDecoratorMixin):
                 "monitored_plugins": monitored_plugins,
                 "total_downloads": total_downloads,
                 "total_daily_growth": total_daily_growth,
-                "global_last_check_time": global_last_check_time
+                "global_last_check_time": global_last_check_time,
+                "version": self.plugin_version
             }
 
         except Exception as e:
@@ -1229,7 +1232,8 @@ class PluginHeatMonitor(_PluginBase, MCPDecoratorMixin):
                 "monitored_plugins": [],
                 "total_downloads": 0,
                 "total_daily_growth": 0,
-                "global_last_check_time": None
+                "global_last_check_time": None,
+                "version": self.plugin_version
             }
 
     # --- Abstract/Base Methods Implementation ---

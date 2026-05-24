@@ -16,6 +16,20 @@
 
       <!-- Center/Right: Meta -->
       <div class="d-flex align-center gap-4">
+        <!-- Run Once Button -->
+        <v-btn
+          variant="text"
+          density="comfortable"
+          size="small"
+          color="primary"
+          class="run-once-btn px-2 text-caption font-weight-bold"
+          :loading="running"
+          @click="emit('run-once')"
+        >
+          <v-icon size="14" class="mr-1">mdi-play-circle-outline</v-icon>
+          立即运行一次
+        </v-btn>
+
         <!-- Plugin Meta -->
         <span class="d-none d-sm-inline-flex align-center">
           <v-icon size="14" class="mr-1">mdi-puzzle-outline</v-icon>
@@ -29,6 +43,8 @@
 </template>
 
 <script setup>
+const emit = defineEmits(['run-once'])
+
 defineProps({
   lastUpdateTime: {
     type: String,
@@ -45,6 +61,10 @@ defineProps({
   author: {
     type: String,
     default: 'DzAvril'
+  },
+  running: {
+    type: Boolean,
+    default: false
   }
 })
 </script>

@@ -235,7 +235,7 @@
           确认要重置该插件数据吗？
         </v-card-title>
         <v-card-text class="text-body-2 pt-2">
-          此操作将清空插件「{{ plugin.plugin_name }}」的所有每日监控记录，以当前下载量作为新的计算基准。此操作不可逆。
+          此操作将清空插件「{{ plugin.plugin_name || plugin.name }}」的所有每日监控记录，以当前下载量作为新的计算基准。此操作不可逆。
         </v-card-text>
         <v-card-actions class="pa-3">
           <v-spacer></v-spacer>
