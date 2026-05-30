@@ -10,7 +10,7 @@ from typing import Dict, List, Any, Optional, Tuple
 from apscheduler.triggers.cron import CronTrigger
 from app.plugins import _PluginBase
 from app.core.plugin import PluginManager
-from app.helper.plugin import PluginHelper
+from app.helper.server import MoviePilotServerHelper
 from app.schemas import NotificationType
 from app.schemas.types import EventType
 from app.core.event import eventmanager, Event
@@ -53,7 +53,7 @@ class PluginHeatMonitor(_PluginBase, MCPDecoratorMixin):
     plugin_name = "插件热度监控"
     plugin_desc = "监控已安装的下载量热度，支持日历热力图可视化"
     plugin_icon = "https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/main/icons/heatmonitor.png"
-    plugin_version = "1.8.1"
+    plugin_version = "1.8.2"
     plugin_author = "DzAvril"
     author_url = "https://github.com/DzAvril"
     plugin_config_prefix = "pluginheatmonitor_"
@@ -305,8 +305,7 @@ class PluginHeatMonitor(_PluginBase, MCPDecoratorMixin):
             logger.info(f"🔍 开始检查插件热度... 监控插件数量：{len(self._monitored_plugins)}")
 
             # 获取插件统计数据
-            plugin_helper = PluginHelper()
-            statistics = plugin_helper.get_statistic()
+            statistics = MoviePilotServerHelper.get_plugin_statistic()
 
             if not statistics:
                 logger.warning("⚠️ 无法获取插件统计数据")
@@ -741,8 +740,7 @@ class PluginHeatMonitor(_PluginBase, MCPDecoratorMixin):
                 }
 
             # 获取实时插件统计数据
-            plugin_helper = PluginHelper()
-            current_stats = plugin_helper.get_statistic()
+            current_stats = MoviePilotServerHelper.get_plugin_statistic()
 
             if not current_stats:
                 return {
@@ -1021,8 +1019,7 @@ class PluginHeatMonitor(_PluginBase, MCPDecoratorMixin):
                     "last_check_time": None
                 }
 
-            plugin_helper = PluginHelper()
-            current_stats = plugin_helper.get_statistic()
+            current_stats = MoviePilotServerHelper.get_plugin_statistic()
 
             if not current_stats:
                 return {
@@ -1158,8 +1155,7 @@ class PluginHeatMonitor(_PluginBase, MCPDecoratorMixin):
                     "version": self.plugin_version
                 }
 
-            plugin_helper = PluginHelper()
-            current_stats = plugin_helper.get_statistic()
+            current_stats = MoviePilotServerHelper.get_plugin_statistic()
 
             if not current_stats:
                 return {
@@ -1479,8 +1475,7 @@ class PluginHeatMonitor(_PluginBase, MCPDecoratorMixin):
             daily_downloads = history_data.get("daily_downloads", {})
 
             # 获取当前下载量
-            plugin_helper = PluginHelper()
-            current_stats = plugin_helper.get_statistic()
+            current_stats = MoviePilotServerHelper.get_plugin_statistic()
             current_downloads = current_stats.get(plugin_id, 0) if current_stats else 0
 
             # 获取插件信息
@@ -1588,8 +1583,7 @@ class PluginHeatMonitor(_PluginBase, MCPDecoratorMixin):
             plugins_list = []
 
             # 获取当前下载统计
-            plugin_helper = PluginHelper()
-            current_stats = plugin_helper.get_statistic()
+            current_stats = MoviePilotServerHelper.get_plugin_statistic()
 
             for plugin_id in self._monitored_plugins.keys():
                 plugin_name, plugin_icon = self._get_plugin_info(plugin_id)
@@ -1669,8 +1663,7 @@ class PluginHeatMonitor(_PluginBase, MCPDecoratorMixin):
                 }
 
             # 获取当前下载量用于重置基准
-            plugin_helper = PluginHelper()
-            current_stats = plugin_helper.get_statistic()
+            current_stats = MoviePilotServerHelper.get_plugin_statistic()
             current_downloads = current_stats.get(plugin_id, 0) if current_stats else 0
 
             if reset_type == "daily_downloads":
@@ -1753,8 +1746,7 @@ class PluginHeatMonitor(_PluginBase, MCPDecoratorMixin):
                 }
 
             # 获取当前下载量
-            plugin_helper = PluginHelper()
-            current_stats = plugin_helper.get_statistic()
+            current_stats = MoviePilotServerHelper.get_plugin_statistic()
             current_downloads = current_stats.get(plugin_id, 0) if current_stats else 0
 
             # 重置热力图数据，保留历史总下载量
@@ -1972,8 +1964,7 @@ class PluginHeatMonitor(_PluginBase, MCPDecoratorMixin):
                 }
 
             # 获取当前下载统计
-            plugin_helper = PluginHelper()
-            current_stats = plugin_helper.get_statistic()
+            current_stats = MoviePilotServerHelper.get_plugin_statistic()
 
             if not current_stats:
                 return {
