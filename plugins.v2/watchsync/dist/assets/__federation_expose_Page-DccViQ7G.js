@@ -411,9 +411,9 @@ return (_ctx, _cache) => {
               }, {
                 prepend: _withCtx(() => [
                   _createVNode(_component_v_icon, null, {
-                    default: _withCtx(() => _cache[3] || (_cache[3] = [
-                      _createTextVNode("mdi-refresh")
-                    ])),
+                    default: _withCtx(() => [...(_cache[3] || (_cache[3] = [
+                      _createTextVNode("mdi-refresh", -1)
+                    ]))]),
                     _: 1
                   })
                 ]),
@@ -429,14 +429,14 @@ return (_ctx, _cache) => {
                   }), {
                     prepend: _withCtx(() => [
                       _createVNode(_component_v_icon, null, {
-                        default: _withCtx(() => _cache[4] || (_cache[4] = [
-                          _createTextVNode("mdi-delete-sweep")
-                        ])),
+                        default: _withCtx(() => [...(_cache[4] || (_cache[4] = [
+                          _createTextVNode("mdi-delete-sweep", -1)
+                        ]))]),
                         _: 1
                       })
                     ]),
-                    _: 2
-                  }, 1040, ["loading"])
+                    _: 1
+                  }, 16, ["loading"])
                 ]),
                 default: _withCtx(() => [
                   _createVNode(_component_v_list, null, {
@@ -446,9 +446,9 @@ return (_ctx, _cache) => {
                       }, {
                         default: _withCtx(() => [
                           _createVNode(_component_v_list_item_title, null, {
-                            default: _withCtx(() => _cache[5] || (_cache[5] = [
-                              _createTextVNode("清理7天前")
-                            ])),
+                            default: _withCtx(() => [...(_cache[5] || (_cache[5] = [
+                              _createTextVNode("清理7天前", -1)
+                            ]))]),
                             _: 1
                           })
                         ]),
@@ -459,9 +459,9 @@ return (_ctx, _cache) => {
                       }, {
                         default: _withCtx(() => [
                           _createVNode(_component_v_list_item_title, null, {
-                            default: _withCtx(() => _cache[6] || (_cache[6] = [
-                              _createTextVNode("清理30天前")
-                            ])),
+                            default: _withCtx(() => [...(_cache[6] || (_cache[6] = [
+                              _createTextVNode("清理30天前", -1)
+                            ]))]),
                             _: 1
                           })
                         ]),
@@ -472,9 +472,9 @@ return (_ctx, _cache) => {
                       }, {
                         default: _withCtx(() => [
                           _createVNode(_component_v_list_item_title, null, {
-                            default: _withCtx(() => _cache[7] || (_cache[7] = [
-                              _createTextVNode("清理90天前")
-                            ])),
+                            default: _withCtx(() => [...(_cache[7] || (_cache[7] = [
+                              _createTextVNode("清理90天前", -1)
+                            ]))]),
                             _: 1
                           })
                         ]),
@@ -494,9 +494,9 @@ return (_ctx, _cache) => {
               }, {
                 prepend: _withCtx(() => [
                   _createVNode(_component_v_icon, null, {
-                    default: _withCtx(() => _cache[8] || (_cache[8] = [
-                      _createTextVNode("mdi-download")
-                    ])),
+                    default: _withCtx(() => [...(_cache[8] || (_cache[8] = [
+                      _createTextVNode("mdi-download", -1)
+                    ]))]),
                     _: 1
                   })
                 ]),
@@ -510,9 +510,9 @@ return (_ctx, _cache) => {
               }, {
                 prepend: _withCtx(() => [
                   _createVNode(_component_v_icon, null, {
-                    default: _withCtx(() => _cache[9] || (_cache[9] = [
-                      _createTextVNode("mdi-cog")
-                    ])),
+                    default: _withCtx(() => [...(_cache[9] || (_cache[9] = [
+                      _createTextVNode("mdi-cog", -1)
+                    ]))]),
                     _: 1
                   })
                 ]),
@@ -526,9 +526,9 @@ return (_ctx, _cache) => {
               }, {
                 default: _withCtx(() => [
                   _createVNode(_component_v_icon, null, {
-                    default: _withCtx(() => _cache[10] || (_cache[10] = [
-                      _createTextVNode("mdi-close")
-                    ])),
+                    default: _withCtx(() => [...(_cache[10] || (_cache[10] = [
+                      _createTextVNode("mdi-close", -1)
+                    ]))]),
                     _: 1
                   })
                 ]),
@@ -645,12 +645,12 @@ return (_ctx, _cache) => {
                               }, {
                                 default: _withCtx(() => [
                                   _createVNode(_component_v_icon, { left: "" }, {
-                                    default: _withCtx(() => _cache[11] || (_cache[11] = [
-                                      _createTextVNode("mdi-chevron-down")
-                                    ])),
+                                    default: _withCtx(() => [...(_cache[11] || (_cache[11] = [
+                                      _createTextVNode("mdi-chevron-down", -1)
+                                    ]))]),
                                     _: 1
                                   }),
-                                  _cache[12] || (_cache[12] = _createTextVNode(" 加载更多历史记录 "))
+                                  _cache[12] || (_cache[12] = _createTextVNode(" 加载更多历史记录 ", -1))
                                 ]),
                                 _: 1
                               }, 8, ["loading"])

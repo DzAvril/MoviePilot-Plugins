@@ -438,9 +438,9 @@ return (_ctx, _cache) => {
                 }, {
                   default: _withCtx(() => [
                     _createVNode(_component_v_icon, { size: "small" }, {
-                      default: _withCtx(() => _cache[3] || (_cache[3] = [
-                        _createTextVNode("mdi-refresh")
-                      ])),
+                      default: _withCtx(() => [...(_cache[3] || (_cache[3] = [
+                        _createTextVNode("mdi-refresh", -1)
+                      ]))]),
                       _: 1
                     })
                   ]),

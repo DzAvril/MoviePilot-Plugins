@@ -4,12 +4,14 @@ import hashlib
 import time
 import random
 import threading
-from datetime import datetime, timedelta
+import re
+from datetime import datetime, timedelta, timezone
 from typing import Any, List, Dict, Tuple, Optional
 from functools import wraps
 from collections import defaultdict
 import sqlite3
 import os
+from urllib.parse import quote
 
 from app.core.event import eventmanager, Event
 from app.log import logger
@@ -17,6 +19,11 @@ from app.plugins import _PluginBase
 from app.schemas import WebhookEventInfo
 from app.schemas.types import EventType
 from app.core.config import settings
+
+try:
+    from apscheduler.schedulers.background import BackgroundScheduler
+except Exception:
+    BackgroundScheduler = None
 
 
 class SyncLoopProtector:
@@ -116,6 +123,65 @@ def retry_on_failure(max_retries=3, base_delay=1, max_delay=60, backoff_factor=2
     return decorator
 
 
+class LocalZSpaceInstance:
+    """
+    本机极影视兼容层实例。
+
+    用于极空间环境中 MoviePilot 未显式配置 ZSpace 媒体服务器时的兜底接入。
+    """
+    _is_watchsync_zspace = True
+
+    def __init__(self, name: str, host: str, token: str, user_id: str, username: str):
+        self.name = name or "极影视"
+        self._host = self._standardize_host(host)
+        self._apikey = token
+        self.user = user_id
+        self._username = username or user_id
+
+    @staticmethod
+    def _standardize_host(host: str) -> str:
+        host = (host or "").strip()
+        if not host.endswith("/"):
+            host += "/"
+        return host
+
+    def _headers(self, extra_headers: Optional[dict] = None) -> dict:
+        headers = {
+            "X-Emby-Token": self._apikey,
+            "X-Emby-Authorization": f"MediaBrowser Token={self._apikey}",
+        }
+        if extra_headers:
+            headers.update(extra_headers)
+        return headers
+
+    def _replace_url(self, url: str) -> str:
+        return url.replace("[HOST]", self._host or "") \
+            .replace("[APIKEY]", self._apikey or "") \
+            .replace("[USER]", self.user or "")
+
+    def get_user(self, user_name: Optional[str] = None) -> Optional[str]:
+        if not user_name or user_name in (self._username, self.user, self.name):
+            return self.user
+        return None
+
+    def get_data(self, url: str):
+        try:
+            from app.utils.http import RequestUtils
+            return RequestUtils(headers=self._headers()).get_res(url=self._replace_url(url))
+        except Exception as e:
+            logger.error(f"连接本机极影视出错：{e}")
+            return None
+
+    def post_data(self, url: str, data: Optional[str] = None, headers: dict = None):
+        try:
+            from app.utils.http import RequestUtils
+            return RequestUtils(headers=self._headers(headers)).post_res(
+                url=self._replace_url(url), data=data)
+        except Exception as e:
+            logger.error(f"连接本机极影视出错：{e}")
+            return None
+
+
 class WatchSync(_PluginBase):
     # 插件名称
     plugin_name = "Emby观看记录同步"
@@ -124,7 +190,7 @@ class WatchSync(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/main/icons/emby_watch_sync.png"
     # 插件版本
-    plugin_version = "1.0"
+    plugin_version = "1.1"
     # 插件作者
     plugin_author = "DzAvril"
     # 作者主页
@@ -146,7 +212,16 @@ class WatchSync(_PluginBase):
         self._sync_played = True    # 是否同步播放完成事件
         self._min_watch_time = 300  # 最小观看时间（秒）
         self._emby_instances = {}
+        self._zspace_instances = {}
+        self._server_types = {}
         self._db_path = None
+        self._zspace_poll_enabled = True
+        self._zspace_poll_interval = 30
+        self._zspace_poll_limit = 20
+        self._zspace_poll_bootstrap_recent_minutes = 120
+        self._zspace_poll_state = {}
+        self._zspace_poll_lock = threading.RLock()
+        self._scheduler = None
         # 事件去重相关
         self._event_timestamps = {}
         self._sync_metrics = {
@@ -178,11 +253,21 @@ class WatchSync(_PluginBase):
             self._sync_favorite = config.get("sync_favorite", True)
             self._sync_played = config.get("sync_played", True)
             self._min_watch_time = config.get("min_watch_time", 300)
+            self._zspace_poll_enabled = config.get("zspace_poll_enabled", True)
+            self._zspace_poll_interval = self._coerce_int(
+                config.get("zspace_poll_interval", 30), 30, 10)
+            self._zspace_poll_limit = self._coerce_int(
+                config.get("zspace_poll_limit", 20), 20, 1)
+            self._zspace_poll_bootstrap_recent_minutes = self._coerce_int(
+                config.get("zspace_poll_bootstrap_recent_minutes", 120), 120, 0)
             logger.info(f"加载配置: enabled={self._enabled}, sync_groups={len(self._sync_groups)}, "
-                        f"sync_favorite={self._sync_favorite}, sync_played={self._sync_played}")
+                        f"sync_favorite={self._sync_favorite}, sync_played={self._sync_played}, "
+                        f"zspace_poll_enabled={self._zspace_poll_enabled}, "
+                        f"zspace_poll_interval={self._zspace_poll_interval}")
 
         # 获取Emby服务器实例
         self._load_emby_instances()
+        self._start_zspace_poll_scheduler()
 
         # 记录API端点信息（简化日志）
         api_endpoints = self.get_api()
@@ -192,6 +277,17 @@ class WatchSync(_PluginBase):
             logger.info("观看记录同步插件已启用")
         else:
             logger.info("观看记录同步插件已禁用")
+
+    @staticmethod
+    def _coerce_int(value, default: int, min_value: int) -> int:
+        """
+        将配置值转为整数，并应用下限。
+        """
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            value = default
+        return max(value, min_value)
 
     def _generate_event_fingerprint(self, event_data: WebhookEventInfo) -> str:
         """
@@ -413,8 +509,12 @@ class WatchSync(_PluginBase):
 
     def _load_emby_instances(self):
         """
-        从主程序获取Emby服务器实例
+        从主程序获取Emby和极影视服务器实例
         """
+        self._emby_instances = {}
+        self._zspace_instances = {}
+        self._server_types = {}
+
         try:
             from app.core.module import ModuleManager
             module_manager = ModuleManager()
@@ -422,12 +522,319 @@ class WatchSync(_PluginBase):
             if emby_module and hasattr(emby_module, 'get_instances'):
                 instances = emby_module.get_instances()
                 if instances:
-                    self._emby_instances = instances
-                    logger.info(
-                        f"通过ModuleManager加载了 {len(self._emby_instances)} 个Emby服务器实例")
-                    return
+                    for name, instance in instances.items():
+                        self._emby_instances[name] = instance
+                        self._server_types[name] = "emby"
+                    logger.info(f"通过ModuleManager加载了 {len(instances)} 个Emby服务器实例")
         except Exception as e:
-            logger.warning(f"ModuleManager方式获取失败: {str(e)}")
+            logger.warning(f"ModuleManager方式获取Emby失败: {str(e)}")
+
+        try:
+            from app.core.module import ModuleManager
+            module_manager = ModuleManager()
+            zspace_module = module_manager._running_modules.get("ZSpaceModule")
+            if zspace_module and hasattr(zspace_module, 'get_instances'):
+                instances = zspace_module.get_instances()
+                if instances:
+                    for name, instance in instances.items():
+                        self._emby_instances[name] = instance
+                        self._zspace_instances[name] = instance
+                        self._server_types[name] = "zspace"
+                    logger.info(f"通过ModuleManager加载了 {len(instances)} 个极影视服务器实例")
+        except Exception as e:
+            logger.warning(f"ModuleManager方式获取极影视失败: {str(e)}")
+
+        local_zspace = self._load_local_zspace_instance()
+        if local_zspace:
+            name, instance = local_zspace
+            if name not in self._emby_instances:
+                self._emby_instances[name] = instance
+                self._zspace_instances[name] = instance
+                self._server_types[name] = "zspace"
+                logger.info(f"自动发现本机极影视服务器实例: {name}")
+
+        logger.info(
+            f"媒体服务器加载完成: Emby={len([s for s, t in self._server_types.items() if t == 'emby'])}, "
+            f"ZSpace={len(self._zspace_instances)}")
+
+    def _load_local_zspace_instance(self) -> Optional[Tuple[str, LocalZSpaceInstance]]:
+        """
+        从极空间挂载的 /zvideo/zvideo.db 自动发现本机极影视 Emby 兼容层。
+        """
+        db_path = os.environ.get("WATCHSYNC_ZSPACE_DB", "/zvideo/zvideo.db")
+        if not os.path.exists(db_path):
+            return None
+
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                media = conn.execute(
+                    "SELECT media_uid, media_uname, user_name FROM zvideo_media LIMIT 1"
+                ).fetchone()
+                if not media:
+                    return None
+                token_row = conn.execute(
+                    "SELECT token FROM zvideo_media_token WHERE media_uid=? "
+                    "ORDER BY updated DESC LIMIT 1",
+                    (media["media_uid"],)
+                ).fetchone()
+                if not token_row or not token_row["token"]:
+                    return None
+        except Exception as e:
+            logger.debug(f"读取本机极影视数据库失败，跳过自动发现: {e}")
+            return None
+
+        hosts = [
+            os.environ.get("WATCHSYNC_ZSPACE_HOST"),
+            os.environ.get("ZSPACE_EMBY_HOST"),
+            "http://127.0.0.1:8021/",
+            "http://172.17.0.1:8021/",
+        ]
+        user_id = media["media_uid"]
+        username = media["media_uname"] or media["user_name"] or user_id
+        token = token_row["token"]
+
+        for host in [h for h in hosts if h]:
+            instance = LocalZSpaceInstance("极影视", host, token, user_id, username)
+            response = instance.get_data("[HOST]emby/System/Info")
+            if response and response.status_code == 200:
+                server_info = response.json() or {}
+                server_name = server_info.get("ServerName") or "极影视"
+                return server_name, instance
+
+        logger.warning("发现 /zvideo/zvideo.db，但未能连通本机极影视 8021 Emby 兼容层")
+        return None
+
+    def _start_zspace_poll_scheduler(self):
+        """
+        启动极影视源端进度轮询。
+        """
+        self._stop_zspace_poll_scheduler()
+        if not self._enabled or not self._zspace_poll_enabled:
+            return
+        if not self._zspace_instances:
+            return
+        if not self._has_zspace_poll_source_users():
+            logger.info("同步组未配置极影视源用户，极影视进度轮询不启动")
+            return
+        if BackgroundScheduler is None:
+            logger.warning("apscheduler不可用，极影视进度轮询未启动")
+            return
+
+        try:
+            self._scheduler = BackgroundScheduler(timezone=settings.TZ)
+            self._scheduler.add_job(
+                func=self.poll_zspace_watch_progress,
+                trigger="interval",
+                seconds=self._zspace_poll_interval,
+                next_run_time=datetime.now() + timedelta(seconds=5),
+                id="watchsync_zspace_progress_poll",
+                name="极影视观看进度轮询",
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+            )
+            self._scheduler.start()
+            logger.info(
+                f"极影视进度轮询已启动: interval={self._zspace_poll_interval}s, "
+                f"limit={self._zspace_poll_limit}")
+        except Exception as e:
+            logger.error(f"启动极影视进度轮询失败: {e}")
+            self._scheduler = None
+
+    def _stop_zspace_poll_scheduler(self):
+        """
+        停止极影视进度轮询。
+        """
+        try:
+            if self._scheduler:
+                self._scheduler.remove_all_jobs()
+                if self._scheduler.running:
+                    self._scheduler.shutdown(wait=False)
+                self._scheduler = None
+        except Exception as e:
+            logger.error(f"停止极影视进度轮询失败: {e}")
+
+    def poll_zspace_watch_progress(self):
+        """
+        轮询极影视继续观看列表，将新增或变化的进度同步到同组用户。
+        """
+        if not self._enabled or not self._zspace_poll_enabled:
+            return
+        if not self._zspace_poll_lock.acquire(blocking=False):
+            logger.debug("极影视进度轮询仍在执行，跳过本轮")
+            return
+        try:
+            for server_name, zspace_instance in list(self._zspace_instances.items()):
+                self._poll_zspace_instance(server_name, zspace_instance)
+        except Exception as e:
+            logger.error(f"极影视进度轮询失败: {e}")
+            logger.error(traceback.format_exc())
+            self._update_sync_metrics('api_error', False, 'zspace_poll')
+        finally:
+            self._zspace_poll_lock.release()
+
+    def _poll_zspace_instance(self, server_name: str, zspace_instance):
+        """
+        轮询单个极影视实例。
+        """
+        source_users = self._get_zspace_poll_source_users(server_name)
+        if not source_users:
+            logger.debug(f"极影视服务器 {server_name} 未配置为同步源，跳过轮询")
+            return
+
+        for source_user in source_users:
+            user_id = zspace_instance.get_user(source_user) if hasattr(zspace_instance, "get_user") else None
+            if not user_id:
+                logger.warning(f"极影视用户不存在，跳过轮询: {server_name}:{source_user}")
+                continue
+
+            items = self._fetch_zspace_resume_items(zspace_instance, user_id)
+            logger.debug(
+                f"极影视轮询获取继续观看条目: {server_name}:{source_user} -> {len(items)}")
+            for item in items:
+                position_ticks = self._get_resume_position_ticks(item)
+                if not self._should_sync_zspace_resume_item(
+                        server_name, source_user, item, position_ticks):
+                    continue
+                if self._loop_protector.is_protected(
+                        source_user, item.get("Id"), "playback"):
+                    logger.info(
+                        f"跳过插件自身写入触发的极影视轮询回弹: "
+                        f"{server_name}:{source_user} -> {item.get('Name')}")
+                    continue
+                logger.info(
+                    f"极影视轮询触发同步: {server_name}:{source_user} -> "
+                    f"{item.get('Name')} ({position_ticks} ticks)")
+                self._sync_to_group_users(server_name, source_user, item, position_ticks)
+
+    def _get_zspace_poll_source_users(self, server_name: str) -> List[str]:
+        """
+        获取配置中属于该极影视实例的源用户。
+        """
+        users = []
+        for group in self._sync_groups:
+            if not group.get("enabled", True):
+                continue
+            for user in group.get("users", []):
+                config_server = user.get("server")
+                username = user.get("username")
+                if not username:
+                    continue
+                actual_server = self._get_actual_server_name(config_server)
+                if actual_server != server_name:
+                    continue
+                if self._get_server_type(actual_server) != "zspace":
+                    continue
+                if username not in users:
+                    users.append(username)
+        return users
+
+    def _has_zspace_poll_source_users(self) -> bool:
+        """
+        判断同步组里是否存在需要作为源端轮询的极影视用户。
+        """
+        for server_name in self._zspace_instances.keys():
+            if self._get_zspace_poll_source_users(server_name):
+                return True
+        return False
+
+    def _fetch_zspace_resume_items(self, zspace_instance, user_id: str) -> List[dict]:
+        """
+        读取极影视继续观看列表。
+        """
+        url = (
+            f"[HOST]emby/Users/{user_id}/Items/Resume?api_key=[APIKEY]"
+            f"&Recursive=true&MediaTypes=Video&Limit={self._zspace_poll_limit}"
+            f"&Fields=ProviderIds,Path,SeriesName,ParentIndexNumber,IndexNumber,"
+            f"RunTimeTicks,UserData,DateCreated,ProductionYear"
+        )
+        response = zspace_instance.get_data(url)
+        if not response or response.status_code != 200:
+            logger.warning(
+                f"极影视继续观看列表读取失败: {response.status_code if response else 'No response'}")
+            return []
+        payload = response.json()
+        if isinstance(payload, dict):
+            return payload.get("Items") or []
+        if isinstance(payload, list):
+            return payload
+        return []
+
+    def _should_sync_zspace_resume_item(
+            self, server_name: str, source_user: str, item: dict, position_ticks: int) -> bool:
+        """
+        判断极影视继续观看条目是否需要同步。
+        """
+        item_id = item.get("Id")
+        if not item_id:
+            return False
+        if not position_ticks or position_ticks < self._min_watch_time * 10000000:
+            return False
+
+        user_data = item.get("UserData") or {}
+        last_played = self._parse_zspace_datetime(
+            user_data.get("LastPlayedDate") or item.get("LastPlayedDate"))
+        signature = self._zspace_resume_signature(item, position_ticks)
+        state_key = f"{server_name}:{source_user}:{item_id}"
+        previous_signature = self._zspace_poll_state.get(state_key)
+        if previous_signature == signature:
+            return False
+
+        self._zspace_poll_state[state_key] = signature
+        if previous_signature is None and not self._is_recent_zspace_resume(last_played):
+            logger.debug(f"极影视轮询初始化旧进度快照，暂不同步: {item.get('Name')}")
+            return False
+        return True
+
+    @staticmethod
+    def _get_resume_position_ticks(item: dict) -> int:
+        """
+        从极影视继续观看条目提取播放进度。
+        """
+        user_data = item.get("UserData") or {}
+        value = user_data.get("PlaybackPositionTicks") or item.get("PlaybackPositionTicks") or 0
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _zspace_resume_signature(item: dict, position_ticks: int) -> str:
+        """
+        生成极影视继续观看去重签名。
+        """
+        user_data = item.get("UserData") or {}
+        last_played = user_data.get("LastPlayedDate") or item.get("LastPlayedDate") or ""
+        played = user_data.get("Played")
+        return f"{position_ticks}:{last_played}:{played}"
+
+    @staticmethod
+    def _parse_zspace_datetime(value: Optional[str]) -> Optional[datetime]:
+        """
+        解析极影视/Emby风格时间。
+        """
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except Exception:
+            return None
+
+    def _is_recent_zspace_resume(self, last_played: Optional[datetime]) -> bool:
+        """
+        判断首次轮询时是否应同步该继续观看条目。
+        """
+        if self._zspace_poll_bootstrap_recent_minutes <= 0:
+            return True
+        if not last_played:
+            return False
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            minutes=self._zspace_poll_bootstrap_recent_minutes)
+        return last_played >= cutoff
 
     @eventmanager.register(EventType.WebhookMessage)
     def handle_webhook_message(self, event: Event):
@@ -461,8 +868,8 @@ class WatchSync(_PluginBase):
         try:
             event_data: WebhookEventInfo = event.event_data
 
-            # 只处理Emby的播放和收藏事件
-            if event_data.channel != "emby":
+            # 只处理Emby和极影视的播放、收藏事件
+            if event_data.channel not in ["emby", "zspace"]:
                 return
 
             # 支持的事件类型：播放事件、收藏事件和播放完成事件
@@ -530,8 +937,9 @@ class WatchSync(_PluginBase):
             server_info = json_object.get("Server", {})
             server_name = server_info.get("Name") or server_info.get("Id")
 
-        if not server_name and self._emby_instances:
-            server_name = list(self._emby_instances.keys())[0]
+        if not server_name:
+            server_name = self._default_server_for_channel(
+                webhook_data.get("channel"))
 
         user_name = json_object.get("User", {}).get("Name")
         item_info = json_object.get("Item", {})
@@ -614,8 +1022,9 @@ class WatchSync(_PluginBase):
             server_info = json_object.get("Server", {})
             server_name = server_info.get("Name") or server_info.get("Id")
 
-        if not server_name and self._emby_instances:
-            server_name = list(self._emby_instances.keys())[0]
+        if not server_name:
+            server_name = self._default_server_for_channel(
+                webhook_data.get("channel"))
 
         user_name = json_object.get("User", {}).get("Name")
         item_info = json_object.get("Item", {})
@@ -751,14 +1160,9 @@ class WatchSync(_PluginBase):
             else:
                 # 对于取消播放状态，需要使用DELETE请求
                 url = f"[HOST]emby/Users/{user_id}/PlayedItems/{item_id}?api_key=[APIKEY]"
-                # 替换URL中的占位符
-                actual_url = url.replace("[HOST]", emby_instance._host or '') \
-                    .replace("[APIKEY]", emby_instance._apikey or '')
-                # 使用RequestUtils发送DELETE请求
-                from app.utils.http import RequestUtils
-                response = RequestUtils().delete_res(actual_url)
+                response = self._delete_media_server_data(emby_instance, url)
 
-            return response and response.status_code == 200
+            return response and response.status_code in [200, 204]
 
         except Exception as e:
             logger.error(f"设置播放状态失败: {str(e)}")
@@ -931,12 +1335,7 @@ class WatchSync(_PluginBase):
             else:
                 # 对于取消收藏，需要使用DELETE请求
                 url = f"[HOST]emby/Users/{user_id}/FavoriteItems/{item_id}?api_key=[APIKEY]"
-                # 替换URL中的占位符
-                actual_url = url.replace("[HOST]", emby_instance._host or '') \
-                    .replace("[APIKEY]", emby_instance._apikey or '')
-                # 使用RequestUtils发送DELETE请求
-                from app.utils.http import RequestUtils
-                response = RequestUtils().delete_res(actual_url)
+                response = self._delete_media_server_data(emby_instance, url)
 
             if response:
                 logger.info(f"收藏API响应状态: {response.status_code}")
@@ -962,6 +1361,9 @@ class WatchSync(_PluginBase):
         获取用户ID
         """
         try:
+            if self._is_zspace_instance(emby_instance) and hasattr(emby_instance, "get_user"):
+                return emby_instance.get_user(user_name)
+
             url = f"[HOST]emby/Users?api_key=[APIKEY]"
             response = emby_instance.get_data(url)
 
@@ -975,6 +1377,23 @@ class WatchSync(_PluginBase):
         except Exception as e:
             logger.error(f"获取用户ID失败: {str(e)}")
             return None
+
+    def _delete_media_server_data(self, media_server, url: str):
+        """
+        发送DELETE请求。极影视兼容层需要 X-Emby-Token，不能只依赖 query api_key。
+        """
+        actual_url = url.replace("[HOST]", getattr(media_server, "_host", "") or "") \
+            .replace("[APIKEY]", getattr(media_server, "_apikey", "") or "") \
+            .replace("[USER]", getattr(media_server, "user", "") or "")
+        headers = None
+        if self._is_zspace_instance(media_server):
+            token = getattr(media_server, "_apikey", "") or ""
+            headers = {
+                "X-Emby-Token": token,
+                "X-Emby-Authorization": f"MediaBrowser Token={token}",
+            }
+        from app.utils.http import RequestUtils
+        return RequestUtils(headers=headers).delete_res(actual_url)
 
     def _cleanup_expired_syncs(self):
         """
@@ -1004,7 +1423,14 @@ class WatchSync(_PluginBase):
                 "max_concurrent": self._max_concurrent_syncs,
                 "event_cache_size": len(self._event_timestamps),
                 "emby_servers": len(self._emby_instances),
-                "sync_groups": len([g for g in self._sync_groups if g.get("enabled", True)])
+                "zspace_servers": len(self._zspace_instances),
+                "sync_groups": len([g for g in self._sync_groups if g.get("enabled", True)]),
+                "zspace_poll_enabled": self._zspace_poll_enabled,
+                "zspace_poll_interval": self._zspace_poll_interval,
+                "zspace_poll_source_users": {
+                    server_name: self._get_zspace_poll_source_users(server_name)
+                    for server_name in self._zspace_instances.keys()
+                }
             }
 
     def _handle_playback_event(self, webhook_data):
@@ -1029,9 +1455,10 @@ class WatchSync(_PluginBase):
             server_name = server_info.get("Name") or server_info.get("Id")
 
         # 如果还是没有服务器名称，尝试使用第一个可用的服务器
-        if not server_name and self._emby_instances:
-            server_name = list(self._emby_instances.keys())[0]
-            logger.info(f"未找到服务器名称，使用第一个可用服务器: {server_name}")
+        if not server_name:
+            server_name = self._default_server_for_channel(
+                webhook_data.get("channel"))
+            logger.info(f"未找到服务器名称，按channel选择可用服务器: {server_name}")
 
         user_name = json_object.get("User", {}).get("Name")
         item_info = json_object.get("Item", {})
@@ -1106,7 +1533,7 @@ class WatchSync(_PluginBase):
         """
         logger.info(f"开始查找同步组 - 源用户: {source_server}:{source_user}")
         logger.info(f"当前配置的同步组数量: {len(self._sync_groups)}")
-        logger.info(f"可用的Emby服务器实例: {list(self._emby_instances.keys())}")
+        logger.info(f"可用的媒体服务器实例: {list(self._emby_instances.keys())}")
 
         synced_count = 0
 
@@ -1193,7 +1620,7 @@ class WatchSync(_PluginBase):
         检查配置中的服务器名是否与实际服务器名匹配 - 改进版本
         支持多种匹配方式：
         1. 精确匹配（最高优先级）
-        2. 配置中使用"Emby"作为通用名称时，匹配任何Emby服务器
+        2. 配置中使用"Emby"/"ZSpace"作为通用名称时，仅匹配对应类型服务器
         3. 严格的部分匹配（避免误匹配）
         """
         if not config_server or not actual_server:
@@ -1204,15 +1631,28 @@ class WatchSync(_PluginBase):
             logger.debug(f"服务器精确匹配: {config_server}")
             return True
 
-        # 如果配置中使用"Emby"作为通用名称，匹配任何Emby服务器实例
-        if config_server.lower() == "emby":
-            logger.debug(f"服务器通用匹配: {config_server} -> {actual_server}")
-            return True
-
-        # 改进的部分匹配逻辑 - 更严格的匹配条件
         config_lower = config_server.lower()
         actual_lower = actual_server.lower()
+        actual_type = self._get_server_type(actual_server)
 
+        # 如果配置中使用"Emby"作为通用名称，只匹配Emby服务器实例
+        if config_lower == "emby":
+            if actual_type == "emby":
+                matched = True
+            elif actual_type == "zspace":
+                matched = False
+            else:
+                matched = self._has_server_type("emby") and not self._looks_like_zspace_server_name(actual_server)
+            logger.debug(f"Emby服务器通用匹配: {config_server} -> {actual_server} = {matched}")
+            return matched
+
+        # 如果配置中使用极影视通用名称，只匹配ZSpace服务器实例
+        if config_lower in ["zspace", "zvideo", "jiyingshi", "极影视"]:
+            matched = actual_type == "zspace" or self._looks_like_zspace_server_name(actual_server)
+            logger.debug(f"极影视服务器通用匹配: {config_server} -> {actual_server} = {matched}")
+            return matched
+
+        # 改进的部分匹配逻辑 - 更严格的匹配条件
         # 只有当配置的服务器名是实际服务器名的子串，且长度足够时才匹配
         # 避免短名称误匹配（如"a"匹配"abc"）
         min_match_length = 3
@@ -1232,6 +1672,75 @@ class WatchSync(_PluginBase):
         logger.debug(f"服务器不匹配: {config_server} vs {actual_server}")
         return False
 
+    def _get_server_type(self, server_name: str) -> str:
+        """
+        获取服务器类型，返回 emby / zspace / unknown。
+        """
+        if not server_name:
+            return "unknown"
+        if server_name in self._server_types:
+            return self._server_types[server_name]
+        if server_name in self._zspace_instances:
+            return "zspace"
+        instance = self._emby_instances.get(server_name)
+        if self._is_zspace_instance(instance):
+            return "zspace"
+        if instance:
+            return "emby"
+        return "unknown"
+
+    def _has_server_type(self, server_type: str) -> bool:
+        """
+        判断当前实例列表中是否存在指定类型的服务器。
+        """
+        return any(
+            self._get_server_type(server_name) == server_type
+            for server_name in self._emby_instances.keys()
+        )
+
+    def _looks_like_zspace_server_name(self, server_name: str) -> bool:
+        """
+        识别没有登记到实例表里的极影视/ZSpace服务器名。
+        """
+        if not server_name:
+            return False
+        if server_name in self._zspace_instances:
+            return True
+        server_lower = server_name.lower()
+        return any(alias in server_lower for alias in [
+            "zspace",
+            "zvideo",
+            "jiyingshi",
+            "ji-ying-shi",
+            "qizhi",
+            "极影视",
+            "极空间",
+        ])
+
+    def _default_server_for_channel(self, channel: str) -> Optional[str]:
+        """
+        根据Webhook channel选择默认服务器。
+        """
+        expected_type = "zspace" if channel == "zspace" else "emby"
+        for server_name in self._emby_instances.keys():
+            if self._get_server_type(server_name) == expected_type:
+                return server_name
+        for server_name in self._emby_instances.keys():
+            return server_name
+        return None
+
+    def _is_zspace_instance(self, instance) -> bool:
+        """
+        判断实例是否为极影视兼容层。
+        """
+        if not instance:
+            return False
+        if getattr(instance, "_is_watchsync_zspace", False):
+            return True
+        class_name = instance.__class__.__name__.lower()
+        module_name = instance.__class__.__module__.lower()
+        return "zspace" in class_name or "zspace" in module_name
+
     def _get_actual_server_name(self, config_server: str) -> Optional[str]:
         """
         根据配置中的服务器名获取实际的服务器名称
@@ -1243,9 +1752,20 @@ class WatchSync(_PluginBase):
         if config_server in self._emby_instances:
             return config_server
 
-        # 如果配置中使用"Emby"作为通用名称，返回第一个可用的服务器
-        if config_server.lower() == "emby" and self._emby_instances:
-            return list(self._emby_instances.keys())[0]
+        config_lower = config_server.lower()
+
+        # 如果配置中使用"Emby"作为通用名称，返回第一个Emby服务器
+        if config_lower == "emby":
+            for server_name in self._emby_instances.keys():
+                if self._get_server_type(server_name) == "emby":
+                    return server_name
+            return None
+
+        # 如果配置中使用极影视通用名称，返回第一个ZSpace服务器
+        if config_lower in ["zspace", "zvideo", "jiyingshi", "极影视"]:
+            for server_name in self._zspace_instances.keys():
+                return server_name
+            return None
 
         # 尝试部分匹配
         for server_name in self._emby_instances.keys():
@@ -1391,6 +1911,10 @@ class WatchSync(_PluginBase):
         在目标服务器中查找匹配的媒体项目
         """
         try:
+            if self._is_zspace_instance(emby_instance):
+                return self._find_matching_zspace_item(
+                    emby_instance, target_user, source_item)
+
             media_name = source_item.get("Name", "Unknown")
             media_type = source_item.get("Type", "Unknown")
             logger.info(f"开始查找匹配媒体: {media_name} ({media_type})")
@@ -1431,60 +1955,45 @@ class WatchSync(_PluginBase):
                 # 这里可以添加IMDB ID搜索逻辑
                 pass
 
-            # 最后尝试名称匹配
-            title = source_item.get("Name")
+            # 最后尝试名称/剧名匹配
+            search_terms = self._get_media_search_terms(source_item)
             year = source_item.get("ProductionYear")
-            logger.info(f"尝试名称匹配: {title} ({year})")
+            logger.info(f"尝试名称匹配: {search_terms} ({year})")
 
-            if title:
+            if search_terms:
                 try:
-                    logger.info(f"通过名称搜索媒体: {title} ({year})")
-
                     user_id = emby_instance.get_user(target_user)
                     if not user_id:
                         logger.error(f"未找到用户: {target_user}")
                         return False
-                    # 构建搜索URL
-                    search_url = ''
-                    if source_item.get("Type") == "Movie":
-                        search_url = f"[HOST]emby/Users/{user_id}/Items?api_key=[APIKEY]&Recursive=true&IncludeItemTypes=Movie&SearchTerm={title}"
-                    elif source_item.get("Type") in ["Episode", "Series"]:
-                        search_url = f"[HOST]emby/Users/{user_id}/Items?api_key=[APIKEY]&Recursive=true&IncludeItemTypes=Series,Episode&SearchTerm={title}"
-                    if year:
-                        search_url += f"&Years={year}"
 
-                    response = emby_instance.get_data(search_url)
-                    if response and response.status_code == 200:
-                        items = response.json().get("Items", [])
-                        logger.info(f"名称搜索到 {len(items)} 个电视剧项目")
+                    include_types = "Movie" if source_item.get("Type") == "Movie" else "Series,Episode"
+                    for term in search_terms:
+                        logger.info(f"通过名称搜索媒体: {term} ({year})")
+                        search_url = (
+                            f"[HOST]emby/Users/{user_id}/Items?api_key=[APIKEY]"
+                            f"&Recursive=true&IncludeItemTypes={include_types}"
+                            f"&SearchTerm={quote(str(term))}&Limit=50"
+                            f"&Fields=ProviderIds,SeriesName,ParentIndexNumber,IndexNumber,"
+                            f"Path,UserData,ProductionYear,RunTimeTicks"
+                        )
+                        if year and source_item.get("Type") == "Movie":
+                            search_url += f"&Years={year}"
 
-                        # 优先返回完全匹配的项目
-                        results = None
-                        for item in items:
-                            if item.get("Name", "").lower() == title.lower():
-                                logger.info(f"找到完全匹配的媒体: {item.get('Name')}")
-                                results = [item]
-
-                        # 如果没有完全匹配，返回第一个结果
-                        if items and results is None:
-                            logger.info(f"返回第一个搜索结果: {items[0].get('Name')}")
-                            results = [items[0]]
+                        response = emby_instance.get_data(search_url)
+                        if response and response.status_code == 200:
+                            items = response.json().get("Items", [])
+                            logger.info(f"名称搜索 '{term}' 返回 {len(items)} 个媒体项目")
+                            best_item = self._pick_best_matching_item(source_item, items)
+                            if best_item:
+                                logger.info(
+                                    f"媒体名称匹配成功: {best_item.get('Name', 'Unknown')}")
+                                return best_item
                         else:
-                            logger.info("未找到名称匹配的媒体")
-                    else:
-                        logger.warning(
-                            f"媒体名称搜索API调用失败: {response.status_code if response else 'No response'}")
-
-                    logger.info(
-                        f"媒体名称搜索结果数量: {len(results) if results else 0}")
-                    if results:
-                        result_item = results[0].__dict__ if hasattr(
-                            results[0], '__dict__') else results[0]
-                        logger.info(
-                            f"媒体名称匹配成功: {result_item.get('Name', 'Unknown')}")
-                        return result_item
-                    else:
-                        return None
+                            logger.warning(
+                                f"媒体名称搜索API调用失败: {response.status_code if response else 'No response'}")
+                    logger.info("未找到名称匹配的媒体")
+                    return None
 
                 except Exception as e:
                     logger.error(f"通过名称搜索电视剧失败: {str(e)}")
@@ -1497,6 +2006,208 @@ class WatchSync(_PluginBase):
             logger.error(f"查找匹配媒体失败: {str(e)}")
             logger.error(traceback.format_exc())
             return None
+
+    def _get_media_search_terms(self, source_item: dict) -> List[str]:
+        """
+        生成媒体搜索词。剧集来源可能只有本地单集标题，需补充剧名。
+        """
+        terms = []
+        if source_item.get("Type") == "Movie":
+            candidates = [
+                source_item.get("Name"),
+                source_item.get("OriginalTitle"),
+            ]
+        else:
+            series_name = source_item.get("SeriesName")
+            candidates = [
+                source_item.get("Name"),
+                series_name,
+                self._normalize_series_name(series_name),
+                source_item.get("OriginalTitle"),
+            ]
+        for term in candidates:
+            if term and term not in terms:
+                terms.append(term)
+        return terms
+
+    def _find_matching_zspace_item(self, zspace_instance, target_user, source_item: dict) -> Optional[dict]:
+        """
+        在极影视兼容层中查找匹配媒体。
+        """
+        try:
+            media_name = source_item.get("Name", "Unknown")
+            media_type = source_item.get("Type", "Unknown")
+            user_id = zspace_instance.get_user(target_user)
+            if not user_id:
+                logger.error(f"未找到极影视用户: {target_user}")
+                return None
+
+            # 如果来源已经是极影视ID，先尝试直接读取。
+            source_item_id = source_item.get("Id")
+            if source_item_id and str(source_item_id).startswith("video_"):
+                direct_url = f"[HOST]emby/Users/{user_id}/Items/{source_item_id}?api_key=[APIKEY]"
+                direct_response = zspace_instance.get_data(direct_url)
+                if direct_response and direct_response.status_code == 200:
+                    return direct_response.json()
+
+            include_types = "Movie" if media_type == "Movie" else "Episode"
+            search_terms = []
+            for term in [
+                source_item.get("SeriesName"),
+                source_item.get("Name"),
+                source_item.get("OriginalTitle"),
+            ]:
+                if term and term not in search_terms:
+                    search_terms.append(term)
+
+            for term in search_terms:
+                search_url = (
+                    f"[HOST]emby/Users/{user_id}/Items?api_key=[APIKEY]"
+                    f"&Recursive=true&IncludeItemTypes={include_types}"
+                    f"&SearchTerm={quote(str(term))}&Limit=30"
+                    f"&Fields=ProviderIds,OriginalTitle,ProductionYear,Path,UserData,"
+                    f"SeriesName,ParentIndexNumber,IndexNumber,RunTimeTicks"
+                )
+                response = zspace_instance.get_data(search_url)
+                if not response or response.status_code != 200:
+                    logger.warning(
+                        f"极影视媒体搜索失败: {response.status_code if response else 'No response'}")
+                    continue
+                items = response.json().get("Items", [])
+                logger.info(f"极影视搜索 '{term}' 返回 {len(items)} 个结果")
+                match_candidates = self._expand_zspace_episode_candidates(
+                    zspace_instance, user_id, source_item, items)
+                best_item = self._pick_best_matching_item(source_item, match_candidates)
+                if best_item:
+                    logger.info(f"极影视匹配成功: {best_item.get('Name')}")
+                    return best_item
+
+            logger.warning(f"极影视未找到匹配媒体: {media_name} ({media_type})")
+            return None
+        except Exception as e:
+            logger.error(f"极影视查找匹配媒体失败: {str(e)}")
+            logger.error(traceback.format_exc())
+            return None
+
+    def _expand_zspace_episode_candidates(
+            self, zspace_instance, user_id: str, source_item: dict, candidates: List[dict]) -> List[dict]:
+        """
+        极影视搜索剧名时可能只返回 Series，需要展开剧集后再按季/集号匹配。
+        """
+        if source_item.get("Type") != "Episode" or not candidates:
+            return candidates
+
+        expanded = [
+            item for item in candidates
+            if item.get("Type") == "Episode"
+        ]
+        for item in candidates:
+            if item.get("Type") != "Series":
+                continue
+            series_id = item.get("Id")
+            if not series_id:
+                continue
+            url = (
+                f"[HOST]emby/Shows/{series_id}/Episodes?api_key=[APIKEY]"
+                f"&UserId={user_id}"
+                f"&Fields=ProviderIds,OriginalTitle,ProductionYear,Path,UserData,"
+                f"SeriesName,ParentIndexNumber,IndexNumber,RunTimeTicks"
+            )
+            response = zspace_instance.get_data(url)
+            if not response or response.status_code != 200:
+                logger.warning(
+                    f"极影视剧集展开失败: {series_id} -> "
+                    f"{response.status_code if response else 'No response'}")
+                continue
+            episode_items = response.json().get("Items", [])
+            logger.info(
+                f"极影视展开剧集: {item.get('Name')} -> {len(episode_items)} 个候选")
+            expanded.extend(episode_items)
+
+        return expanded or candidates
+
+    def _pick_best_matching_item(self, source_item: dict, candidates: List[dict]) -> Optional[dict]:
+        """
+        从搜索结果中挑选最接近的媒体项。
+        """
+        if not candidates:
+            return None
+
+        source_type = source_item.get("Type")
+        source_name = (source_item.get("Name") or "").strip().lower()
+        source_series = self._normalize_series_name(
+            source_item.get("SeriesName")).lower()
+        source_year = source_item.get("ProductionYear")
+        source_season = source_item.get("ParentIndexNumber")
+        source_episode = source_item.get("IndexNumber")
+        source_provider_ids = source_item.get("ProviderIds", {}) or {}
+        source_tmdb = source_provider_ids.get("Tmdb")
+
+        for item in candidates:
+            provider_ids = item.get("ProviderIds", {}) or {}
+            if source_tmdb and provider_ids.get("Tmdb") == source_tmdb:
+                return item
+
+        if source_type == "Movie":
+            for item in candidates:
+                item_name = (item.get("Name") or "").strip().lower()
+                item_year = item.get("ProductionYear")
+                if item_name == source_name and (
+                        not source_year or not item_year or str(item_year) == str(source_year)):
+                    return item
+
+        if source_type in ["Episode", "Series"]:
+            for item in candidates:
+                if source_type == "Episode" and item.get("Type") != "Episode":
+                    continue
+                item_series = self._normalize_series_name(
+                    item.get("SeriesName") or item.get("Name")).lower()
+                item_season = item.get("ParentIndexNumber")
+                item_episode = item.get("IndexNumber")
+                if source_type == "Episode" and source_season and (
+                        not item_season or str(source_season) != str(item_season)):
+                    continue
+                if source_type == "Episode" and source_episode and (
+                        not item_episode or str(source_episode) != str(item_episode)):
+                    continue
+                if source_type != "Episode" and source_season and item_season and str(source_season) != str(item_season):
+                    continue
+                if source_type != "Episode" and source_episode and item_episode and str(source_episode) != str(item_episode):
+                    continue
+                if source_series and item_series and source_series != item_series:
+                    continue
+                return item
+
+            for item in candidates:
+                item_name = (item.get("Name") or "").strip().lower()
+                item_series = self._normalize_series_name(
+                    item.get("SeriesName") or item.get("Name")).lower()
+                if source_series and item_series and source_series != item_series:
+                    continue
+                if source_name and item_name and source_name != item_name:
+                    continue
+                return item
+
+            return None
+
+        return candidates[0]
+
+    @staticmethod
+    def _normalize_series_name(name: Optional[str]) -> str:
+        """
+        规范化剧名，去掉极影视常见的季尾缀。
+        """
+        if not name:
+            return ""
+        value = str(name).strip()
+        patterns = [
+            r"\s*第\s*\d+\s*季\s*$",
+            r"\s*[Ss]eason\s*\d+\s*$",
+            r"\s*[Ss]\d+\s*$",
+        ]
+        for pattern in patterns:
+            value = re.sub(pattern, "", value).strip()
+        return value
 
     def _search_tv_by_tmdb(self, emby_instance, tmdb_id: str):
         """
@@ -1543,6 +2254,10 @@ class WatchSync(_PluginBase):
                 logger.error(f"未找到用户: {user_name}")
                 return False
 
+            if self._is_zspace_instance(emby_instance):
+                return self._update_zspace_progress(
+                    emby_instance, user_id, item_id, position_ticks)
+
             success = self._update_progress_via_userdata(
                 emby_instance, user_id, item_id, position_ticks)
             if success:
@@ -1550,6 +2265,48 @@ class WatchSync(_PluginBase):
 
         except Exception as e:
             logger.error(f"更新用户观看进度失败: {str(e)}")
+            return False
+
+    def _update_zspace_progress(self, zspace_instance, user_id: str, item_id: str, position_ticks: int) -> bool:
+        """
+        通过极影视Emby兼容层更新播放进度。
+        """
+        try:
+            logger.info(
+                f"使用极影视 Sessions/Playing/Progress 更新进度: user_id={user_id}, "
+                f"item_id={item_id}, position={position_ticks}")
+            url = "[HOST]emby/Sessions/Playing/Progress"
+            data = {
+                "ItemId": item_id,
+                "UserId": user_id,
+                "PositionTicks": position_ticks,
+                "IsPaused": True,
+                "IsMuted": False,
+                "PlayMethod": "DirectPlay",
+                "PlaySessionId": "watchsync",
+                "MediaSourceId": item_id,
+                "CanSeek": True,
+                "EventName": "timeupdate"
+            }
+            response = zspace_instance.post_data(
+                url,
+                json.dumps(data),
+                headers={"Content-Type": "application/json"}
+            )
+            if response and response.status_code in [200, 204]:
+                logger.info(f"极影视进度更新成功: {position_ticks} ticks")
+                return True
+            logger.error(
+                f"极影视进度更新失败: {response.status_code if response else 'No response'}")
+            if response:
+                logger.error(f"响应内容: {response.text}")
+            self._update_sync_metrics('api_error', False, 'zspace_progress_api')
+            return False
+        except Exception as e:
+            logger.error(f"极影视进度更新异常: {str(e)}")
+            logger.error(traceback.format_exc())
+            self._update_sync_metrics(
+                'api_error', False, 'zspace_progress_api_exception')
             return False
 
     def _update_progress_via_userdata(self, emby_instance, user_id: str, item_id: str, position_ticks: int) -> bool:
@@ -1812,6 +2569,7 @@ class WatchSync(_PluginBase):
             for name, instance in self._emby_instances.items():
                 server_info = {
                     "name": name,
+                    "type": self._get_server_type(name),
                     "host": instance._host if hasattr(instance, '_host') else "",
                     "status": "online" if instance else "offline"
                 }
@@ -1829,8 +2587,8 @@ class WatchSync(_PluginBase):
         API端点：获取所有服务器的用户列表
         """
         logger.info("用户API端点调用")
-        logger.info(f"当前Emby实例数量: {len(self._emby_instances)}")
-        logger.info(f"Emby实例列表: {list(self._emby_instances.keys())}")
+        logger.info(f"当前媒体服务器实例数量: {len(self._emby_instances)}")
+        logger.info(f"媒体服务器实例列表: {list(self._emby_instances.keys())}")
 
         try:
             all_users = {}
@@ -1861,7 +2619,7 @@ class WatchSync(_PluginBase):
         """
         logger.info(f"内部用户获取方法调用，服务器: '{server}'")
         logger.info(
-            f"可用的Emby服务器实例: {list(self._emby_instances.keys()) if self._emby_instances else '无'}")
+            f"可用的媒体服务器实例: {list(self._emby_instances.keys()) if self._emby_instances else '无'}")
 
         # 如果没有传入server参数，尝试获取第一个可用服务器
         if not server and self._emby_instances:
@@ -1923,6 +2681,14 @@ class WatchSync(_PluginBase):
 
             if not emby_instance:
                 logger.error("Emby实例为空")
+                return []
+
+            if self._is_zspace_instance(emby_instance):
+                user_id = emby_instance.get_user(None) if hasattr(emby_instance, "get_user") else getattr(
+                    emby_instance, "user", None)
+                user_name = getattr(emby_instance, "_username", None) or user_id
+                if user_id and user_name:
+                    return [{"id": user_id, "name": user_name}]
                 return []
 
             url = f"[HOST]emby/Users?api_key=[APIKEY]"
@@ -2232,4 +2998,5 @@ class WatchSync(_PluginBase):
         """
         退出插件
         """
+        self._stop_zspace_poll_scheduler()
         logger.info("观看记录同步插件已停止")

@@ -1,7 +1,7 @@
 {
   "name": "watchsync",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "description": "MoviePilot Watch Sync Plugin - 观看记录同步插件",
   "scripts": {

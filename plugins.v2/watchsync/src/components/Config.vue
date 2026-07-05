@@ -63,6 +63,39 @@
             </v-col>
           </v-row>
 
+          <v-expand-transition>
+            <div v-if="hasZspaceInGroups">
+              <div class="text-subtitle-2 font-weight-medium mt-2 mb-2">极影视同步</div>
+              <v-alert type="warning" variant="tonal" class="mb-4">
+                启用极影视 -> Emby 同步会轮询极影视 Emby 适配接口，用于捕获极影视作为播放源时的进度变化。
+              </v-alert>
+              <v-row>
+                <v-col cols="12" md="6">
+                  <v-switch
+                    v-model="config.zspace_poll_enabled"
+                    label="同步极影视观看记录到 Emby"
+                    color="primary"
+                    inset
+                    hint="关闭后仍可同步普通 Emby 到极影视，但不会从极影视读取进度"
+                    persistent-hint
+                  ></v-switch>
+                </v-col>
+                <v-col v-if="config.zspace_poll_enabled" cols="12" md="6">
+                  <v-text-field
+                    v-model.number="config.zspace_poll_interval"
+                    label="极影视轮询间隔（秒）"
+                    variant="outlined"
+                    type="number"
+                    min="10"
+                    step="5"
+                    hint="建议 30 秒，最低 10 秒"
+                    persistent-hint
+                  ></v-text-field>
+                </v-col>
+              </v-row>
+            </div>
+          </v-expand-transition>
+
           <!-- 同步组配置区域 -->
           <div class="text-subtitle-1 font-weight-bold mt-4 mb-2 d-flex align-center">
             <span>同步组配置</span>
@@ -195,7 +228,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 
 // 接收初始配置
 const props = defineProps({
@@ -228,6 +261,8 @@ const defaultConfig = {
   sync_movies: true,
   sync_tv: true,
   min_watch_time: 300,
+  zspace_poll_enabled: true,
+  zspace_poll_interval: 30,
   sync_groups: [],
 }
 
@@ -291,6 +326,24 @@ async function loadEmbyServers() {
 // 获取服务器用户列表
 function getServerUsers(serverName) {
   return serverUsers.value[serverName] || []
+}
+
+const hasZspaceInGroups = computed(() => {
+  return (config.sync_groups || []).some(group => {
+    return (group.users || []).some(user => isZspaceServer(user.server))
+  })
+})
+
+function isZspaceServer(serverName) {
+  if (!serverName) {
+    return false
+  }
+  const server = embyServers.value.find(item => item.name === serverName)
+  if (server?.type === 'zspace') {
+    return true
+  }
+  const normalized = String(serverName).toLowerCase()
+  return ['zspace', 'zvideo', 'jiyingshi', 'qizhi', '极影视', '极空间'].some(alias => normalized.includes(alias))
 }
 
 // 加载所有服务器的用户列表

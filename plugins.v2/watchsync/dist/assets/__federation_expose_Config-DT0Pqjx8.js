@@ -1,18 +1,19 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
 
-const {createTextVNode:_createTextVNode,resolveComponent:_resolveComponent,withCtx:_withCtx,createVNode:_createVNode,toDisplayString:_toDisplayString,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,createElementVNode:_createElementVNode,renderList:_renderList,Fragment:_Fragment,createElementBlock:_createElementBlock,withModifiers:_withModifiers} = await importShared('vue');
+const {createTextVNode:_createTextVNode,resolveComponent:_resolveComponent,withCtx:_withCtx,createVNode:_createVNode,toDisplayString:_toDisplayString,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,createElementVNode:_createElementVNode,createElementBlock:_createElementBlock,renderList:_renderList,Fragment:_Fragment,withModifiers:_withModifiers} = await importShared('vue');
 
 
 const _hoisted_1 = { class: "plugin-config" };
-const _hoisted_2 = { class: "text-subtitle-1 font-weight-bold mt-4 mb-2 d-flex align-center" };
-const _hoisted_3 = { class: "text-subtitle-2 mb-2" };
-const _hoisted_4 = { key: 0 };
-const _hoisted_5 = {
+const _hoisted_2 = { key: 0 };
+const _hoisted_3 = { class: "text-subtitle-1 font-weight-bold mt-4 mb-2 d-flex align-center" };
+const _hoisted_4 = { class: "text-subtitle-2 mb-2" };
+const _hoisted_5 = { key: 0 };
+const _hoisted_6 = {
   key: 1,
   class: "text-center text-medium-emphasis py-2"
 };
 
-const {ref,reactive,onMounted} = await importShared('vue');
+const {ref,reactive,computed,onMounted} = await importShared('vue');
 
 
 // 接收初始配置
@@ -53,6 +54,8 @@ const defaultConfig = {
   sync_movies: true,
   sync_tv: true,
   min_watch_time: 300,
+  zspace_poll_enabled: true,
+  zspace_poll_interval: 30,
   sync_groups: [],
 };
 
@@ -116,6 +119,24 @@ async function loadEmbyServers() {
 // 获取服务器用户列表
 function getServerUsers(serverName) {
   return serverUsers.value[serverName] || []
+}
+
+const hasZspaceInGroups = computed(() => {
+  return (config.sync_groups || []).some(group => {
+    return (group.users || []).some(user => isZspaceServer(user.server))
+  })
+});
+
+function isZspaceServer(serverName) {
+  if (!serverName) {
+    return false
+  }
+  const server = embyServers.value.find(item => item.name === serverName);
+  if (server?.type === 'zspace') {
+    return true
+  }
+  const normalized = String(serverName).toLowerCase();
+  return ['zspace', 'zvideo', 'jiyingshi', 'qizhi', '极影视', '极空间'].some(alias => normalized.includes(alias))
 }
 
 // 加载所有服务器的用户列表
@@ -274,6 +295,7 @@ return (_ctx, _cache) => {
   const _component_v_col = _resolveComponent("v-col");
   const _component_v_row = _resolveComponent("v-row");
   const _component_v_text_field = _resolveComponent("v-text-field");
+  const _component_v_expand_transition = _resolveComponent("v-expand-transition");
   const _component_v_spacer = _resolveComponent("v-spacer");
   const _component_v_select = _resolveComponent("v-select");
   const _component_v_card_text = _resolveComponent("v-card-text");
@@ -294,9 +316,9 @@ return (_ctx, _cache) => {
             }, {
               default: _withCtx(() => [
                 _createVNode(_component_v_icon, { left: "" }, {
-                  default: _withCtx(() => _cache[6] || (_cache[6] = [
-                    _createTextVNode("mdi-close")
-                  ])),
+                  default: _withCtx(() => [...(_cache[8] || (_cache[8] = [
+                    _createTextVNode("mdi-close", -1)
+                  ]))]),
                   _: 1
                 })
               ]),
@@ -305,9 +327,9 @@ return (_ctx, _cache) => {
           ]),
           default: _withCtx(() => [
             _createVNode(_component_v_card_title, null, {
-              default: _withCtx(() => _cache[5] || (_cache[5] = [
-                _createTextVNode("观看记录同步配置")
-              ])),
+              default: _withCtx(() => [...(_cache[7] || (_cache[7] = [
+                _createTextVNode("观看记录同步配置", -1)
+              ]))]),
               _: 1
             })
           ]),
@@ -343,11 +365,11 @@ return (_ctx, _cache) => {
               ref_key: "form",
               ref: form,
               modelValue: isFormValid.value,
-              "onUpdate:modelValue": _cache[4] || (_cache[4] = $event => ((isFormValid).value = $event)),
+              "onUpdate:modelValue": _cache[6] || (_cache[6] = $event => ((isFormValid).value = $event)),
               onSubmit: _withModifiers(saveConfig, ["prevent"])
             }, {
               default: _withCtx(() => [
-                _cache[16] || (_cache[16] = _createElementVNode("div", { class: "text-subtitle-1 font-weight-bold mt-4 mb-2" }, "基本设置", -1)),
+                _cache[20] || (_cache[20] = _createElementVNode("div", { class: "text-subtitle-1 font-weight-bold mt-4 mb-2" }, "基本设置", -1)),
                 _createVNode(_component_v_row, null, {
                   default: _withCtx(() => [
                     _createVNode(_component_v_col, { cols: "12" }, {
@@ -367,7 +389,7 @@ return (_ctx, _cache) => {
                   ]),
                   _: 1
                 }),
-                _cache[17] || (_cache[17] = _createElementVNode("div", { class: "text-subtitle-1 font-weight-bold mt-4 mb-2" }, "同步设置", -1)),
+                _cache[21] || (_cache[21] = _createElementVNode("div", { class: "text-subtitle-1 font-weight-bold mt-4 mb-2" }, "同步设置", -1)),
                 _createVNode(_component_v_row, null, {
                   default: _withCtx(() => [
                     _createVNode(_component_v_col, {
@@ -422,8 +444,73 @@ return (_ctx, _cache) => {
                   ]),
                   _: 1
                 }),
-                _createElementVNode("div", _hoisted_2, [
-                  _cache[9] || (_cache[9] = _createElementVNode("span", null, "同步组配置", -1)),
+                _createVNode(_component_v_expand_transition, null, {
+                  default: _withCtx(() => [
+                    (hasZspaceInGroups.value)
+                      ? (_openBlock(), _createElementBlock("div", _hoisted_2, [
+                          _cache[10] || (_cache[10] = _createElementVNode("div", { class: "text-subtitle-2 font-weight-medium mt-2 mb-2" }, "极影视同步", -1)),
+                          _createVNode(_component_v_alert, {
+                            type: "warning",
+                            variant: "tonal",
+                            class: "mb-4"
+                          }, {
+                            default: _withCtx(() => [...(_cache[9] || (_cache[9] = [
+                              _createTextVNode(" 启用极影视 -> Emby 同步会轮询极影视 Emby 适配接口，用于捕获极影视作为播放源时的进度变化。 ", -1)
+                            ]))]),
+                            _: 1
+                          }),
+                          _createVNode(_component_v_row, null, {
+                            default: _withCtx(() => [
+                              _createVNode(_component_v_col, {
+                                cols: "12",
+                                md: "6"
+                              }, {
+                                default: _withCtx(() => [
+                                  _createVNode(_component_v_switch, {
+                                    modelValue: config.zspace_poll_enabled,
+                                    "onUpdate:modelValue": _cache[4] || (_cache[4] = $event => ((config.zspace_poll_enabled) = $event)),
+                                    label: "同步极影视观看记录到 Emby",
+                                    color: "primary",
+                                    inset: "",
+                                    hint: "关闭后仍可同步普通 Emby 到极影视，但不会从极影视读取进度",
+                                    "persistent-hint": ""
+                                  }, null, 8, ["modelValue"])
+                                ]),
+                                _: 1
+                              }),
+                              (config.zspace_poll_enabled)
+                                ? (_openBlock(), _createBlock(_component_v_col, {
+                                    key: 0,
+                                    cols: "12",
+                                    md: "6"
+                                  }, {
+                                    default: _withCtx(() => [
+                                      _createVNode(_component_v_text_field, {
+                                        modelValue: config.zspace_poll_interval,
+                                        "onUpdate:modelValue": _cache[5] || (_cache[5] = $event => ((config.zspace_poll_interval) = $event)),
+                                        modelModifiers: { number: true },
+                                        label: "极影视轮询间隔（秒）",
+                                        variant: "outlined",
+                                        type: "number",
+                                        min: "10",
+                                        step: "5",
+                                        hint: "建议 30 秒，最低 10 秒",
+                                        "persistent-hint": ""
+                                      }, null, 8, ["modelValue"])
+                                    ]),
+                                    _: 1
+                                  }))
+                                : _createCommentVNode("", true)
+                            ]),
+                            _: 1
+                          })
+                        ]))
+                      : _createCommentVNode("", true)
+                  ]),
+                  _: 1
+                }),
+                _createElementVNode("div", _hoisted_3, [
+                  _cache[13] || (_cache[13] = _createElementVNode("span", null, "同步组配置", -1)),
                   _createVNode(_component_v_spacer),
                   _createVNode(_component_v_btn, {
                     color: "primary",
@@ -432,12 +519,12 @@ return (_ctx, _cache) => {
                   }, {
                     default: _withCtx(() => [
                       _createVNode(_component_v_icon, { left: "" }, {
-                        default: _withCtx(() => _cache[7] || (_cache[7] = [
-                          _createTextVNode("mdi-plus")
-                        ])),
+                        default: _withCtx(() => [...(_cache[11] || (_cache[11] = [
+                          _createTextVNode("mdi-plus", -1)
+                        ]))]),
                         _: 1
                       }),
-                      _cache[8] || (_cache[8] = _createTextVNode(" 添加同步组 "))
+                      _cache[12] || (_cache[12] = _createTextVNode(" 添加同步组 ", -1))
                     ]),
                     _: 1
                   })
@@ -448,9 +535,9 @@ return (_ctx, _cache) => {
                       type: "info",
                       class: "mb-4"
                     }, {
-                      default: _withCtx(() => _cache[10] || (_cache[10] = [
-                        _createTextVNode(" 请添加同步组，将需要同步观看记录的用户加入同一个组中。组内任意用户的观看记录都会自动同步到其他所有用户。 ")
-                      ])),
+                      default: _withCtx(() => [...(_cache[14] || (_cache[14] = [
+                        _createTextVNode(" 请添加同步组，将需要同步观看记录的用户加入同一个组中。组内任意用户的观看记录都会自动同步到其他所有用户。 ", -1)
+                      ]))]),
                       _: 1
                     }))
                   : _createCommentVNode("", true),
@@ -510,24 +597,24 @@ return (_ctx, _cache) => {
                                   }, {
                                     default: _withCtx(() => [
                                       _createVNode(_component_v_icon, { left: "" }, {
-                                        default: _withCtx(() => _cache[11] || (_cache[11] = [
-                                          _createTextVNode("mdi-delete")
-                                        ])),
+                                        default: _withCtx(() => [...(_cache[15] || (_cache[15] = [
+                                          _createTextVNode("mdi-delete", -1)
+                                        ]))]),
                                         _: 1
                                       }),
-                                      _cache[12] || (_cache[12] = _createTextVNode(" 删除组 "))
+                                      _cache[16] || (_cache[16] = _createTextVNode(" 删除组 ", -1))
                                     ]),
-                                    _: 2
-                                  }, 1032, ["onClick"])
+                                    _: 1
+                                  }, 8, ["onClick"])
                                 ]),
                                 _: 2
                               }, 1024)
                             ]),
                             _: 2
                           }, 1024),
-                          _createElementVNode("div", _hoisted_3, "组内用户 (" + _toDisplayString(group.users?.length || 0) + "个)", 1),
+                          _createElementVNode("div", _hoisted_4, "组内用户 (" + _toDisplayString(group.users?.length || 0) + "个)", 1),
                           (group.users && group.users.length)
-                            ? (_openBlock(), _createElementBlock("div", _hoisted_4, [
+                            ? (_openBlock(), _createElementBlock("div", _hoisted_5, [
                                 (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(group.users, (user, userIndex) => {
                                   return (_openBlock(), _createBlock(_component_v_row, {
                                     key: userIndex,
@@ -588,14 +675,14 @@ return (_ctx, _cache) => {
                                           }, {
                                             default: _withCtx(() => [
                                               _createVNode(_component_v_icon, null, {
-                                                default: _withCtx(() => _cache[13] || (_cache[13] = [
-                                                  _createTextVNode("mdi-delete")
-                                                ])),
+                                                default: _withCtx(() => [...(_cache[17] || (_cache[17] = [
+                                                  _createTextVNode("mdi-delete", -1)
+                                                ]))]),
                                                 _: 1
                                               })
                                             ]),
-                                            _: 2
-                                          }, 1032, ["onClick"])
+                                            _: 1
+                                          }, 8, ["onClick"])
                                         ]),
                                         _: 2
                                       }, 1024)
@@ -604,7 +691,7 @@ return (_ctx, _cache) => {
                                   }, 1024))
                                 }), 128))
                               ]))
-                            : (_openBlock(), _createElementBlock("div", _hoisted_5, " 暂无组内用户 ")),
+                            : (_openBlock(), _createElementBlock("div", _hoisted_6, " 暂无组内用户 ")),
                           _createVNode(_component_v_btn, {
                             color: "primary",
                             variant: "text",
@@ -614,15 +701,15 @@ return (_ctx, _cache) => {
                           }, {
                             default: _withCtx(() => [
                               _createVNode(_component_v_icon, { left: "" }, {
-                                default: _withCtx(() => _cache[14] || (_cache[14] = [
-                                  _createTextVNode("mdi-account-plus")
-                                ])),
+                                default: _withCtx(() => [...(_cache[18] || (_cache[18] = [
+                                  _createTextVNode("mdi-account-plus", -1)
+                                ]))]),
                                 _: 1
                               }),
-                              _cache[15] || (_cache[15] = _createTextVNode(" 添加用户 "))
+                              _cache[19] || (_cache[19] = _createTextVNode(" 添加用户 ", -1))
                             ]),
-                            _: 2
-                          }, 1032, ["onClick"])
+                            _: 1
+                          }, 8, ["onClick"])
                         ]),
                         _: 2
                       }, 1024)
@@ -657,12 +744,12 @@ return (_ctx, _cache) => {
             }, {
               default: _withCtx(() => [
                 _createVNode(_component_v_icon, { left: "" }, {
-                  default: _withCtx(() => _cache[18] || (_cache[18] = [
-                    _createTextVNode("mdi-content-save")
-                  ])),
+                  default: _withCtx(() => [...(_cache[22] || (_cache[22] = [
+                    _createTextVNode("mdi-content-save", -1)
+                  ]))]),
                   _: 1
                 }),
-                _cache[19] || (_cache[19] = _createTextVNode(" 保存配置 "))
+                _cache[23] || (_cache[23] = _createTextVNode(" 保存配置 ", -1))
               ]),
               _: 1
             }, 8, ["loading"]),
@@ -672,12 +759,12 @@ return (_ctx, _cache) => {
             }, {
               default: _withCtx(() => [
                 _createVNode(_component_v_icon, { left: "" }, {
-                  default: _withCtx(() => _cache[20] || (_cache[20] = [
-                    _createTextVNode("mdi-refresh")
-                  ])),
+                  default: _withCtx(() => [...(_cache[24] || (_cache[24] = [
+                    _createTextVNode("mdi-refresh", -1)
+                  ]))]),
                   _: 1
                 }),
-                _cache[21] || (_cache[21] = _createTextVNode(" 重置 "))
+                _cache[25] || (_cache[25] = _createTextVNode(" 重置 ", -1))
               ]),
               _: 1
             }),
@@ -688,12 +775,12 @@ return (_ctx, _cache) => {
             }, {
               default: _withCtx(() => [
                 _createVNode(_component_v_icon, { left: "" }, {
-                  default: _withCtx(() => _cache[22] || (_cache[22] = [
-                    _createTextVNode("mdi-chart-line")
-                  ])),
+                  default: _withCtx(() => [...(_cache[26] || (_cache[26] = [
+                    _createTextVNode("mdi-chart-line", -1)
+                  ]))]),
                   _: 1
                 }),
-                _cache[23] || (_cache[23] = _createTextVNode(" 查看统计 "))
+                _cache[27] || (_cache[27] = _createTextVNode(" 查看统计 ", -1))
               ]),
               _: 1
             })
