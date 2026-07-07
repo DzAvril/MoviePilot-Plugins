@@ -161,18 +161,43 @@ class FileMonitorHandler(FileSystemEventHandler):
     def on_moved(self, event):
         if event.is_directory:
             return
-        # 处理移动事件：移除源文件，添加目标文件
+        # 处理移动事件：移除源文件，添加目标文件。
+        # 如果目标文件未能进入监控状态（例如整目录删除时 watchfiles 将源路径
+        # 临时识别为 moved，但目标路径已瞬时消失），源路径应按删除事件处理，
+        # 否则会跳过延迟清理，残留硬链接和转移记录。
         src_path = Path(event.src_path)
         dest_path = Path(event.dest_path)
 
         logger.info(f"监测到文件移动：{src_path} -> {dest_path}")
 
-        # 从状态中移除源文件
+        # 保留源文件的监控信息，后续判断目标是否成功接管同一文件实体。
         with state_lock:
-            self.sync.file_state.pop(str(src_path), None)
+            src_file_info = self.sync.file_state.pop(str(src_path), None)
 
-        # 添加目标文件
+        # 添加目标文件。正常重命名/移动时，目标存在并会接管监控状态。
         self._add_file_to_state(dest_path)
+
+        # 目标不存在、被过滤，或没有接管同一文件实体时，按源文件删除处理。
+        with state_lock:
+            dest_file_info = self.sync.file_state.get(str(dest_path))
+
+        if src_file_info and (
+            not dest_file_info
+            or not self.sync._same_file_identity(
+                dest_file_info, src_file_info.dev, src_file_info.inode
+            )
+        ):
+            logger.info(
+                f"移动目标未进入监控或文件实体不一致，按删除处理源文件：{src_path}"
+            )
+            with state_lock:
+                self.sync.file_state[str(src_path)] = src_file_info
+
+            if self.monitor_type == "strm":
+                if src_path.suffix.lower() == ".strm":
+                    self.sync.handle_strm_deleted(src_path)
+            else:
+                self.sync.handle_deleted(src_path)
 
     def on_deleted(self, event):
         file_path = Path(event.src_path)
@@ -266,7 +291,7 @@ class RemoveLink(_PluginBase):
     # 插件图标
     plugin_icon = "Ombi_A.png"
     # 插件版本
-    plugin_version = "2.13"
+    plugin_version = "2.14"
     # 插件作者
     plugin_author = "DzAvril"
     # 作者主页
