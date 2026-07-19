@@ -156,21 +156,28 @@ def main():
     plugin._delete_scrap_infos = True
 
     history_calls = []
-    scrap_calls = []
     plugin.delete_history = lambda path: history_calls.append(path)
-    plugin.delete_scrap_infos = lambda path: scrap_calls.append(path)
+    plugin._custom_scrap_extensions = []
+    plugin.exclude_dirs = ""
+    plugin.monitor_dirs = ""
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         root = Path(tmp_dir)
         source = root / "source" / "movie.mkv"
-        old_link = root / "library-old" / "movie.mkv"
-        new_link = root / "library-new" / "movie.mkv"
+        library_dir = root / "library"
+        old_link = library_dir / "movie.old.mkv"
+        new_link = library_dir / "movie.new.mkv"
+        old_nfo = library_dir / "movie.old.nfo"
+        old_thumb = library_dir / "movie.old-thumb.jpg"
+        new_nfo = library_dir / "movie.new.nfo"
         source.parent.mkdir()
-        old_link.parent.mkdir()
-        new_link.parent.mkdir()
+        library_dir.mkdir()
         source.write_bytes(b"movie")
         os.link(source, old_link)
         os.link(source, new_link)
+        old_nfo.write_text("old nfo", encoding="utf-8")
+        old_thumb.write_bytes(b"old thumb")
+        new_nfo.write_text("new nfo", encoding="utf-8")
 
         stat_info = old_link.stat()
         old_add_time = datetime.now() - timedelta(seconds=2)
@@ -203,13 +210,15 @@ def main():
 
         assert task.processed is True
         assert new_link.exists(), "newer same device+inode hardlink was deleted"
+        assert old_nfo.exists() is False, "old-name nfo was not cleaned"
+        assert old_thumb.exists() is False, "old-name thumbnail was not cleaned"
+        assert new_nfo.exists(), "new-name nfo was incorrectly deleted"
         assert str(new_link) in plugin.file_state
         assert plugin.messages == []
         assert history_calls == []
-        assert scrap_calls == []
         assert eventmanager.calls == []
 
-    print("PASS: newer same device+inode re-hardlink skips deletion and notifications")
+    print("PASS: re-hardlink skips media deletion but cleans old-name scrape files")
 
 
 if __name__ == "__main__":

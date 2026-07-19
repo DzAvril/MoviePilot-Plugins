@@ -291,7 +291,7 @@ class RemoveLink(_PluginBase):
     # 插件图标
     plugin_icon = "Ombi_A.png"
     # 插件版本
-    plugin_version = "2.14"
+    plugin_version = "2.15"
     # 插件作者
     plugin_author = "DzAvril"
     # 作者主页
@@ -1266,8 +1266,12 @@ class RemoveLink(_PluginBase):
                         # 可能早于删除事件到达，不能只比较删除任务创建时间。
                         if file_info.add_time > task.deleted_add_time:
                             logger.info(
-                                f"检测到相同文件实体的新文件 {path}，添加时间 {file_info.add_time} 晚于原路径加入时间 {task.deleted_add_time}，可能是重新硬链接，跳过删除操作"
+                                f"检测到相同文件实体的新文件 {path}，添加时间 {file_info.add_time} 晚于原路径加入时间 {task.deleted_add_time}，可能是重新硬链接，跳过硬链接删除"
                             )
+                            # 重新整理/重命名会生成新的媒体硬链接，但旧文件名对应的
+                            # nfo、jpg、trickplay 等刮削文件不会自动消失。此时只清理
+                            # 被删除旧路径同名的刮削文件，不能删除新硬链接、转移记录或种子。
+                            self.delete_scrap_infos(task.file_path)
                             return
 
             # 延迟执行所有删除相关操作
