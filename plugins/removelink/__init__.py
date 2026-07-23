@@ -8,7 +8,7 @@ import traceback
 from pathlib import Path
 from typing import List, Tuple, Dict, Any
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import NamedTuple
 
 from app.db.transferhistory_oper import TransferHistoryOper
@@ -291,7 +291,7 @@ class RemoveLink(_PluginBase):
     # 插件图标
     plugin_icon = "Ombi_A.png"
     # 插件版本
-    plugin_version = "2.15"
+    plugin_version = "2.16"
     # 插件作者
     plugin_author = "DzAvril"
     # 作者主页
@@ -1262,11 +1262,24 @@ class RemoveLink(_PluginBase):
                     if self._same_file_identity(
                         file_info, task.deleted_dev, task.deleted_inode
                     ) and path != str(task.file_path):
-                        # 检查文件是否晚于被删除路径加入监控，重新整理时新硬链接事件
-                        # 可能早于删除事件到达，不能只比较删除任务创建时间。
-                        if file_info.add_time > task.deleted_add_time:
+                        # 重整/改名会在删除旧硬链接的前后创建同 inode 的新路径。
+                        # 但下载源文件通常早于媒体库硬链接创建；仅比较两个加入监控
+                        # 的时间会把“下载器删除源文件”误判为重新硬链接，导致媒体库
+                        # 硬链接永远不清理（#54/#55）。候选路径必须在删除事件附近
+                        # 才能作为重新整理的替代文件保留。事件到达可能乱序，因此接受
+                        # 删除事件之前一个延迟窗口内创建、或删除事件之后才创建的路径。
+                        rehardlink_window = timedelta(
+                            seconds=max(5, self._delay_seconds)
+                        )
+                        is_recent_rehardlink = (
+                            file_info.add_time >= task.timestamp - rehardlink_window
+                        )
+                        if (
+                            file_info.add_time > task.deleted_add_time
+                            and is_recent_rehardlink
+                        ):
                             logger.info(
-                                f"检测到相同文件实体的新文件 {path}，添加时间 {file_info.add_time} 晚于原路径加入时间 {task.deleted_add_time}，可能是重新硬链接，跳过硬链接删除"
+                                f"检测到相同文件实体的新文件 {path}，添加时间 {file_info.add_time} 接近删除事件 {task.timestamp}，可能是重新硬链接，跳过硬链接删除"
                             )
                             # 重新整理/重命名会生成新的媒体硬链接，但旧文件名对应的
                             # nfo、jpg、trickplay 等刮削文件不会自动消失。此时只清理
