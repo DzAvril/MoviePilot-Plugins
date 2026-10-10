@@ -6,7 +6,7 @@ import threading
 import time
 import traceback
 from pathlib import Path
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import NamedTuple
@@ -81,6 +81,39 @@ except ImportError:
 
 state_lock = threading.Lock()
 deletion_queue_lock = threading.Lock()
+
+# 下载器把未完成文件改名时使用的临时后缀（qBittorrent .!qB、Transmission .part、MoviePilot .mp 等）
+DOWNLOAD_TMP_SUFFIXES = (".!qb", ".part", ".mp", ".tmp", ".temp")
+
+
+def _is_download_tmp_file(file_path: Path) -> bool:
+    """
+    判断文件是否为下载器尚未完成的临时文件。
+    """
+    return file_path.suffix.casefold() in DOWNLOAD_TMP_SUFFIXES
+
+
+def _find_tmp_alias(file_path: Path, dev: int, inode: int) -> Optional[Path]:
+    """
+    查找被下载器改名为临时文件、但仍指向同一文件实体的路径。
+
+    Transmission 开启 rename-partial-files、qBittorrent 开启“未完成文件添加扩展名”后，
+    校验或续传时会把未完成的 X.mkv 改名为 X.mkv.part / X.mkv.!qB，文件实体（dev+inode）
+    并未删除。此时不能按“源文件被删除”去清理它的硬链接和转移记录。
+    :param file_path: 收到删除事件的原路径
+    :param dev: 原文件的设备号
+    :param inode: 原文件的 inode
+    :return: 仍指向同一实体的临时文件路径，没有则返回 None
+    """
+    for suffix in DOWNLOAD_TMP_SUFFIXES:
+        candidate = file_path.with_name(file_path.name + suffix)
+        try:
+            stat_info = candidate.stat()
+        except OSError:
+            continue
+        if stat_info.st_dev == dev and stat_info.st_ino == inode:
+            return candidate
+    return None
 
 
 class FileInfo(NamedTuple):
@@ -187,6 +220,15 @@ class FileMonitorHandler(FileSystemEventHandler):
                 dest_file_info, src_file_info.dev, src_file_info.inode
             )
         ):
+            # 下载器校验/续传时把 X.mkv 改名为 X.mkv.part，目标是被过滤的临时文件，
+            # 但文件实体仍在；不能按删除处理，否则会误删媒体库硬链接和转移记录。
+            if _is_download_tmp_file(dest_path) and self.sync._is_same_entity_on_disk(
+                dest_path, src_file_info.dev, src_file_info.inode
+            ):
+                logger.info(
+                    f"文件被下载器改名为临时文件，实体仍存在，跳过删除联动：{src_path} -> {dest_path}"
+                )
+                return
             logger.info(
                 f"移动目标未进入监控或文件实体不一致，按删除处理源文件：{src_path}"
             )
@@ -291,7 +333,7 @@ class RemoveLink(_PluginBase):
     # 插件图标
     plugin_icon = "Ombi_A.png"
     # 插件版本
-    plugin_version = "2.16"
+    plugin_version = "2.17"
     # 插件作者
     plugin_author = "DzAvril"
     # 作者主页
@@ -1244,6 +1286,15 @@ class RemoveLink(_PluginBase):
         """判断两个监控记录是否指向同一个本地文件实体。"""
         return file_info.dev == dev and file_info.inode == inode
 
+    @staticmethod
+    def _is_same_entity_on_disk(path: Path, dev: int, inode: int) -> bool:
+        """判断磁盘上的路径是否仍是指定 dev+inode 的文件实体。"""
+        try:
+            stat_info = path.stat()
+        except OSError:
+            return False
+        return stat_info.st_dev == dev and stat_info.st_ino == inode
+
     def _execute_delayed_deletion(self, task: DeletionTask):
         """
         执行延迟删除任务
@@ -1254,6 +1305,16 @@ class RemoveLink(_PluginBase):
             # 验证原文件是否仍然被删除（未被重新创建）
             if task.file_path.exists():
                 logger.info(f"文件 {task.file_path} 已被重新创建，跳过删除操作")
+                return
+
+            # 下载器校验/续传把文件改名为 .part/.!qB 等临时文件时，实体仍在，不是删除
+            tmp_alias = _find_tmp_alias(
+                task.file_path, task.deleted_dev, task.deleted_inode
+            )
+            if tmp_alias:
+                logger.info(
+                    f"文件 {task.file_path} 已被下载器改名为临时文件 {tmp_alias.name}，实体仍存在，跳过删除操作"
+                )
                 return
 
             # 检查是否有相同inode的新文件（重新硬链接的情况）
@@ -1483,6 +1544,14 @@ class RemoveLink(_PluginBase):
             else:
                 # 立即删除模式（原有逻辑）
                 deleted_files = []
+
+                # 下载器校验/续传把文件改名为 .part/.!qB 等临时文件时，实体仍在，不是删除
+                tmp_alias = _find_tmp_alias(file_path, deleted_dev, deleted_inode)
+                if tmp_alias:
+                    logger.info(
+                        f"文件 {file_path} 已被下载器改名为临时文件 {tmp_alias.name}，实体仍存在，跳过删除操作"
+                    )
+                    return
 
                 # 清理刮削文件
                 self.delete_scrap_infos(file_path)
