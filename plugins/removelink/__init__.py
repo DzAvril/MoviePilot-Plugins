@@ -83,6 +83,11 @@ state_lock = threading.Lock()
 deletion_queue_lock = threading.Lock()
 
 
+def is_trickplay_path(path: Path) -> bool:
+    """预览目录及其子树不作为媒体监控；不依赖已删除路径是否仍存在。"""
+    return any(part.lower().endswith(".trickplay") for part in Path(path).parts)
+
+
 class FileInfo(NamedTuple):
     """文件信息"""
 
@@ -118,6 +123,8 @@ class FileMonitorHandler(FileSystemEventHandler):
 
     def _is_excluded_file(self, file_path: Path) -> bool:
         """检查文件是否应该被排除"""
+        if is_trickplay_path(file_path):
+            return True
         # 排除临时文件
         if file_path.suffix in [".!qB", ".part", ".mp", ".tmp", ".temp"]:
             return True
@@ -168,6 +175,11 @@ class FileMonitorHandler(FileSystemEventHandler):
         src_path = Path(event.src_path)
         dest_path = Path(event.dest_path)
 
+        if is_trickplay_path(src_path) or is_trickplay_path(dest_path):
+            with state_lock:
+                self.sync.file_state.pop(str(src_path), None)
+            return
+
         logger.info(f"监测到文件移动：{src_path} -> {dest_path}")
 
         # 保留源文件的监控信息，后续判断目标是否成功接管同一文件实体。
@@ -201,6 +213,11 @@ class FileMonitorHandler(FileSystemEventHandler):
 
     def on_deleted(self, event):
         file_path = Path(event.src_path)
+        # 包括目录事件，避免预览生成/清理误触发种子删除。
+        if is_trickplay_path(file_path):
+            with state_lock:
+                self.sync.file_state.pop(str(file_path), None)
+            return
         if event.is_directory:
             # 单独处理文件夹删除触发删除种子
             if self.sync._delete_torrents:
@@ -243,14 +260,19 @@ def updateState(monitor_dirs: List[str]):
     error_count = 0
 
     for mon_path in monitor_dirs:
+        if is_trickplay_path(Path(mon_path)):
+            continue
         if not os.path.exists(mon_path):
             logger.warning(f"监控目录不存在：{mon_path}")
             continue
 
         try:
-            for root, _, files in os.walk(mon_path):
+            for root, dirs, files in os.walk(mon_path):
+                dirs[:] = [d for d in dirs if not is_trickplay_path(Path(root) / d)]
                 for file_name in files:
                     file_path = Path(root) / file_name
+                    if is_trickplay_path(file_path):
+                        continue
                     try:
                         if not file_path.exists():
                             continue
@@ -291,7 +313,7 @@ class RemoveLink(_PluginBase):
     # 插件图标
     plugin_icon = "Ombi_A.png"
     # 插件版本
-    plugin_version = "2.16"
+    plugin_version = "2.17"
     # 插件作者
     plugin_author = "DzAvril"
     # 作者主页
@@ -1128,7 +1150,7 @@ class RemoveLink(_PluginBase):
         """
         清理path相关的刮削文件
         """
-        if not self._delete_scrap_infos:
+        if is_trickplay_path(path) or not self._delete_scrap_infos:
             return
         # 文件所在目录已被删除则退出
         if not os.path.exists(path.parent):
@@ -1140,7 +1162,11 @@ class RemoveLink(_PluginBase):
                 for file in path.parent.iterdir():
                     if not file.name.startswith(name_prefix):
                         continue
-                    if file.is_dir() and file.suffix.lower() in self.SCRAP_DIR_SUFFIXES:
+                    if (
+                        file.is_dir()
+                        and file.suffix.lower() in self.SCRAP_DIR_SUFFIXES
+                        and file.stem == path.stem
+                    ):
                         shutil.rmtree(file)
                         logger.info(f"删除刮削目录：{file}")
                     elif self._is_scrap_file(file):
@@ -1168,6 +1194,8 @@ class RemoveLink(_PluginBase):
         """
         从指定路径开始，逐级向上层目录检测并删除空目录，直到遇到非空目录或到达指定监控目录为止
         """
+        if is_trickplay_path(path):
+            return
         # logger.info(f"清理空目录: {path}")
         while True:
             parent_path = path.parent
@@ -1221,6 +1249,9 @@ class RemoveLink(_PluginBase):
         会抛出 FileNotFoundError 并中断当前批次清理。这里把这种过期状态视为
         已经被外部清理，移除记录后继续处理其它文件，避免删除队列/监控流程被卡住。
         """
+        if is_trickplay_path(file):
+            self.file_state.pop(state_key, None)
+            return False
         if self.__is_excluded(file):
             logger.debug(f"文件 {file} 在不删除目录中，跳过")
             return False
@@ -1249,6 +1280,11 @@ class RemoveLink(_PluginBase):
         执行延迟删除任务
         """
         try:
+            # 兼容旧扫描状态/已入队任务，必须先于 inode 匹配和刮削清理。
+            if is_trickplay_path(task.file_path):
+                with state_lock:
+                    self.file_state.pop(str(task.file_path), None)
+                return
             logger.debug(f"开始执行延迟删除任务: {task.file_path}")
 
             # 验证原文件是否仍然被删除（未被重新创建）
@@ -1259,6 +1295,8 @@ class RemoveLink(_PluginBase):
             # 检查是否有相同inode的新文件（重新硬链接的情况）
             with state_lock:
                 for path, file_info in self.file_state.items():
+                    if is_trickplay_path(Path(path)):
+                        continue
                     if self._same_file_identity(
                         file_info, task.deleted_dev, task.deleted_inode
                     ) and path != str(task.file_path):
@@ -1442,6 +1480,10 @@ class RemoveLink(_PluginBase):
         """
         处理删除事件
         """
+        if is_trickplay_path(file_path):
+            with state_lock:
+                self.file_state.pop(str(file_path), None)
+            return
         logger.debug(f"处理删除事件: {file_path}")
 
         # 删除的文件对应的监控信息
@@ -1932,6 +1974,8 @@ class RemoveLink(_PluginBase):
         """
         处理 strm 文件删除事件
         """
+        if is_trickplay_path(strm_file_path):
+            return
         logger.info(f"处理 strm 文件删除: {strm_file_path}")
 
         try:
