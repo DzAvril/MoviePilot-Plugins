@@ -68,9 +68,31 @@ function primitives(Vue) {
   return {icon, button, badge, time, title};
 }
 
+export function createPlaylistCover(Vue) {
+  const {defineComponent, h, ref} = Vue;
+  const {icon} = primitives(Vue);
+  return defineComponent({
+    name: 'MusicPlaylistCover', props: {playlist: Object, index: Number},
+    setup(props) {
+      const failedUrl = ref('');
+      return () => {
+        const url = props.playlist.cover_url;
+        return h('div', {class: `qqm-cover qqm-cover-${props.index % 3}`}, [icon('music'),
+          url && failedUrl.value !== url && h('img', {
+            key: url, src: `/api/v1/system/img/1?imgurl=${encodeURIComponent(url)}&cache=true`,
+            alt: `${props.playlist.title}的封面`, loading: 'lazy', decoding: 'async', referrerpolicy: 'no-referrer',
+            onError: () => {failedUrl.value = url;},
+          }),
+        ]);
+      };
+    },
+  });
+}
+
 export function createPage(Vue) {
   const {defineComponent, h, ref, computed, watch, onMounted, onBeforeUnmount} = Vue;
   const {icon, button, badge, time, title} = primitives(Vue);
+  const PlaylistCover = createPlaylistCover(Vue);
   return defineComponent({
     name: 'QQMusicPage',
     props: {api: Object, pluginId: String},
@@ -228,7 +250,7 @@ export function createPage(Vue) {
           h('section', {class: 'qqm-playlists-section'}, [title('订阅歌单', '歌单新增歌曲会自动加入单曲订阅。',
             data.value.unavailable ? badge(`${data.value.unavailable} 项暂不可读`, 'warn') : null),
             h('div', {class: 'qqm-playlists'}, data.value.playlists.length ? data.value.playlists.map((p, i) =>
-              h('article', {class: 'qqm-playlist', key: p.id}, [h('div', {class: `qqm-cover qqm-cover-${i % 3}`}, icon('music')),
+              h('article', {class: 'qqm-playlist', key: p.id}, [h(PlaylistCover, {playlist: p, index: i}),
                 h('div', {class: 'qqm-playlist-info'}, [h('h4', p.title), h('p', `${p.source === 'netease' ? '网易云' : 'QQ 音乐'} · ${p.total || 0} 首歌曲`),
                   p.last_error ? h('p', {class: 'qqm-error-text'}, '读取失败，保留上次结果') : h('span', {class: 'qqm-playlist-status'}, [icon('check'), p.last_fetch ? '同步正常' : '等待同步'])]),
                 button('查看歌曲', () => {playlist.value = p.id; selectStatus('');}, {icon: 'arrow', iconOnly: true})])) :
@@ -244,7 +266,7 @@ export function createPage(Vue) {
               badge(check.allowed ? '可选曲' : '已跳过', check.allowed ? 'green' : 'muted'),
               h('div', [h('strong', check.title), h('p', check.reason)]), h('time', time(check.at)),
             ])) : h('p', {class: 'qqm-muted'}, '暂无检查记录'))]),
-          h('footer', {class: 'qqm-footer'}, [h('span', '音乐歌单同步'), h('span', 'v1.8.0')]),
+          h('footer', {class: 'qqm-footer'}, [h('span', '音乐歌单同步'), h('span', 'v1.8.1')]),
         ],
       ]);
     },

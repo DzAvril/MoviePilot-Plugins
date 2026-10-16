@@ -5,7 +5,7 @@ import re
 import unicodedata
 from datetime import datetime, timezone
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlsplit, urlunsplit
 from pathlib import PurePosixPath
 
 
@@ -14,6 +14,25 @@ class PlaylistError(ValueError):
 
 
 MUSIC_SOURCES = ("qqmusic", "netease")
+
+
+def playlist_cover_url(value, source):
+    """Accept public music-platform image hosts and serve covers over HTTPS."""
+    value = html.unescape(str(value or "")).strip()
+    if value.startswith("//"):
+        value = "https:" + value
+    domains = {"qqmusic": ("y.gtimg.cn", "qpic.y.qq.com", "p.qpic.cn"),
+               "netease": ("music.126.net", "music.127.net", "music.163.com")}.get(source, ())
+    try:
+        url = urlsplit(value)
+        host = url.hostname or ""
+        if (url.scheme not in ("http", "https") or url.username or url.password
+                or url.port not in (None, 80, 443)
+                or not any(host == domain or host.endswith("." + domain) for domain in domains)):
+            return ""
+        return urlunsplit(("https", host, url.path, url.query, ""))
+    except ValueError:
+        return ""
 
 
 def media_key(source, media_id):
@@ -101,6 +120,7 @@ def fetch_netease_playlist(request, pid, batch_size=200):
         except (PlaylistError, TypeError, ValueError, OverflowError):
             unavailable.append({"songid": sid, "reason": "网易云暂未提供可用歌曲信息"})
     return {"id": media_key("netease", pid), "title": html.unescape(str(playlist.get("name") or "网易云歌单")),
+            "cover_url": playlist_cover_url(playlist.get("coverImgUrl"), "netease"),
             "source": "netease", "total": expected, "songs": songs, "unavailable": unavailable,
             "member_ids": [media_key("netease", sid) for sid in ids]}
 
@@ -245,7 +265,7 @@ def normalize_song(raw: dict) -> dict:
 def fetch_playlist(request_page, pid: str, page_size: int = 1000, fetch_filtered=None) -> dict:
     """按总数与 hasmore 双重校验分页，拒绝截断、重复页和错误响应。"""
     songs = []
-    title = ""
+    title, cover_url = "", ""
     expected = None
     signatures = set()
     unavailable = {}
@@ -266,7 +286,10 @@ def fetch_playlist(request_page, pid: str, page_size: int = 1000, fetch_filtered
         expected = total
         for item in data.get("filtered_song") or []:
             unavailable[str(item.get("songid"))] = item
-        title = html.unescape(str((data.get("dirinfo") or {}).get("title") or title))
+        info = data.get("dirinfo") or {}
+        title = html.unescape(str(info.get("title") or title))
+        cover_url = (playlist_cover_url(info.get("picurl"), "qqmusic")
+                     or playlist_cover_url(info.get("picurl2"), "qqmusic") or cover_url)
         raw_songs = data.get("songlist")
         if not isinstance(raw_songs, list):
             raise PlaylistError("QQ 歌单曲目列表格式异常")
@@ -295,7 +318,7 @@ def fetch_playlist(request_page, pid: str, page_size: int = 1000, fetch_filtered
             if str(song["id"]) in unavailable:
                 unique[song["mid"]] = song
                 unavailable.pop(str(song["id"]))
-    return {"id": pid, "title": title, "total": len(unique), "songs": list(unique.values()),
+    return {"id": pid, "title": title, "cover_url": cover_url, "total": len(unique), "songs": list(unique.values()),
             "unavailable": list(unavailable.values())}
 
 
@@ -365,6 +388,8 @@ def merge_playlists(previous, snapshots, errors, configured, now):
                 if fp and mid not in recordings.setdefault(fp, []):
                     recordings[fp].append(mid)
             entry.update({k: snapshot[k] for k in ("id", "title", "total")})
+            if "cover_url" in snapshot:
+                entry["cover_url"] = playlist_cover_url(snapshot["cover_url"], platform)
             members = snapshot.get("member_ids", [song["mid"] for song in snapshot["songs"]])
             entry.update(mids=list(dict.fromkeys(aliases.get(mid, mid) for mid in members if aliases.get(mid, mid) in tracks)),
                          unavailable=snapshot.get("unavailable", []), last_fetch=now, last_error="")

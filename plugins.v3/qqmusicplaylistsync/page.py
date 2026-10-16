@@ -45,7 +45,7 @@ def page_projection(state, overview, config, settings, registry, checks, adapter
                       "album": song.get("album", ""), "subscription_status": item.get("status", "pending"),
                       "status": base_status, "playlist_ids": list(item.get("playlist_ids", [])),
                       **(lifecycle or {}).get("states", {}).get(mid, {})})
-    playlists = [{key: entry.get(key) for key in ("id", "title", "source", "total", "last_fetch", "last_error")}
+    playlists = [{key: entry.get(key) for key in ("id", "title", "source", "cover_url", "total", "last_fetch", "last_error")}
                  for entry in overview.get("playlists", [])]
     return {
         "success": True,

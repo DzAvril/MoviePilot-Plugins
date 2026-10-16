@@ -3,7 +3,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 
 const source = await readFile(new URL('../../../plugins.v3/qqmusicplaylistsync/dist/assets/view.js', import.meta.url), 'utf8');
-const {filterSongs, paginate, downloadStatus, applySongStates} = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+const {filterSongs, paginate, downloadStatus, applySongStates, createPlaylistCover} = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 const songs = Array.from({length:321}, (_, i) => ({id:String(i),title:`歌曲${i}`,artists:['歌手'],album:'专辑',
   playlist_ids:i%2 ? ['one'] : ['one','two'],status:i<20 ? 'library' : 'searching'}));
 
@@ -75,4 +75,24 @@ test('live song updates replace subscription labels with actual lifecycle while 
   assert.equal(later.status_counts.library,2);
   assert.equal(later.songs[1].title,data.songs[1].title);
   assert.equal(later.status_updated_at,115);
+});
+
+test('playlist covers use MP caching, fall back after load failure, and retry when the platform changes the cover', () => {
+  const Vue = {defineComponent:value=>value, ref:value=>({value}), h:(type,props,children)=>({type,props,children})};
+  const playlist = {title:'我的歌单', cover_url:'https://p1.music.126.net/cover.jpg?a=1&b=2'};
+  const render = createPlaylistCover(Vue).setup({playlist,index:0});
+  const image = () => render().children.find(child=>child?.type==='img');
+  const img = image();
+  const sourceUrl = new URL(img.props.src,'https://moviepilot.test');
+  assert.equal(sourceUrl.pathname,'/api/v1/system/img/1');
+  assert.equal(sourceUrl.searchParams.get('imgurl'),playlist.cover_url);
+  assert.equal(sourceUrl.searchParams.get('cache'),'true');
+  assert.equal(img.props.alt,'我的歌单的封面');
+  img.props.onError();
+  assert.equal(image(),undefined);
+  assert.equal(render().children[0].type,'svg');
+  playlist.cover_url = 'https://p1.music.126.net/new.jpg';
+  assert.ok(image());
+  playlist.cover_url = '';
+  assert.equal(image(),undefined);
 });
