@@ -64,3 +64,17 @@ def test_both_platform_covers_reach_page_projection_and_failed_fetch_keeps_the_p
     qq['cover_url'] = 'https://y.gtimg.cn/new.jpg'
     state = core.merge_playlists(state, {'123': qq}, {}, pids, 30)
     assert state['playlists']['123']['cover_url'] == 'https://y.gtimg.cn/new.jpg'
+
+
+def test_page_authorizes_covers_with_host_signer_without_persisting_resource_capabilities():
+    overview = {'playlists': [{'id': 'one', 'cover_url': 'https://y.gtimg.cn/cover.jpg'},
+                              {'id': 'two', 'cover_url': ''}]}
+    calls = []
+    def sign(url):
+        calls.append(url)
+        return url + '#host-resource-capability'
+    result = page.page_projection({'tracks': {}}, overview, {}, {}, {}, [], image_url=sign)
+    assert calls == ['https://y.gtimg.cn/cover.jpg']
+    assert result['playlists'][0]['cover_url'].endswith('#host-resource-capability')
+    assert result['playlists'][1]['cover_url'] == ''
+    assert '#host-resource-capability' not in str(overview)

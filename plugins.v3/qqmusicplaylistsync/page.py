@@ -34,7 +34,7 @@ def download_cards(registry, tracks, read_download=None):
     return cards
 
 
-def page_projection(state, overview, config, settings, registry, checks, adapter_error="", lifecycle=None):
+def page_projection(state, overview, config, settings, registry, checks, adapter_error="", lifecycle=None, *, image_url=None):
     songs = []
     for mid, item in state.get("tracks", {}).items():
         if not item.get("present"):
@@ -47,6 +47,10 @@ def page_projection(state, overview, config, settings, registry, checks, adapter
                       **(lifecycle or {}).get("states", {}).get(mid, {})})
     playlists = [{key: entry.get(key) for key in ("id", "title", "source", "cover_url", "total", "last_fetch", "last_error")}
                  for entry in overview.get("playlists", [])]
+    if image_url:
+        for playlist in playlists:
+            if playlist.get("cover_url"):
+                playlist["cover_url"] = image_url(playlist["cover_url"])
     return {
         "success": True,
         "overview": {key: overview.get(key, 0) for key in

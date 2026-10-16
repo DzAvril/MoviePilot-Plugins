@@ -20,7 +20,7 @@ from app.schemas.types import ChainEventType, MediaSource, MediaType
 from app.sdk.events import eventmanager
 from app.sdk.logging import logger
 from app.sdk.media import MusicInfo
-from app.sdk.network import RequestUtils
+from app.sdk.network import RequestUtils, SecurityUtils
 from app.sdk.plugin import _PluginBase
 from app.sdk.queries import list_subscriptions, list_subscription_history, list_transfer_history
 from app.sdk.scheduler import add_plugin_once_job
@@ -40,7 +40,7 @@ class QQMusicPlaylistSync(_PluginBase):
     plugin_name = "音乐歌单同步"
     plugin_desc = "持续同步 QQ 与网易云歌单，保持单曲订阅，从分轨专辑只下载歌单歌曲，跳过 CUE。"
     plugin_icon = "https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/main/icons/MusicPlaylistSync-1.7.1.png"
-    plugin_version = "1.8.1"
+    plugin_version = "1.8.2"
     plugin_author = "DzAvril"
     author_url = "https://github.com/DzAvril"
     plugin_config_prefix = "qqmusicplaylistsync_"
@@ -778,7 +778,8 @@ class QQMusicPlaylistSync(_PluginBase):
             lifecycle = song_lifecycle(state, registry, {}, [], library_files=self._status_library_files,
                                        file_exists=lambda path, storage: self._status_file_exists(path, storage, settings))
         return page_projection(state, summary(state), self._config, settings, registry,
-                               self.get_data("single_track_checks") or [], self._adapter_error, lifecycle)
+                               self.get_data("single_track_checks") or [], self._adapter_error, lifecycle,
+                               image_url=SecurityUtils.sign_url)
 
     def _status_file_exists(self, path, storage, settings):
         root = settings.get("library_path")

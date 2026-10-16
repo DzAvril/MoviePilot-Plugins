@@ -84,7 +84,7 @@ test('playlist covers use MP caching, fall back after load failure, and retry wh
   const image = () => render().children.find(child=>child?.type==='img');
   const img = image();
   const sourceUrl = new URL(img.props.src,'https://moviepilot.test');
-  assert.equal(sourceUrl.pathname,'/api/v1/system/img/1');
+  assert.equal(sourceUrl.pathname,'/api/v1/system/img/0');
   assert.equal(sourceUrl.searchParams.get('imgurl'),playlist.cover_url);
   assert.equal(sourceUrl.searchParams.get('cache'),'true');
   assert.equal(img.props.alt,'我的歌单的封面');
