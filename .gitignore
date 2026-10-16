@@ -170,3 +170,5 @@ __federation_shared_vuetify/
 index-*
 date-*
 runtime-*
+# V3 playlist-sync regression tests
+!tests/v3/qqmusicplaylistsync/test_*

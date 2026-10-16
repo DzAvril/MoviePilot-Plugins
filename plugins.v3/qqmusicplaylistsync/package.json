@@ -1,0 +1,9 @@
+{
+  "name": "moviepilot-music-playlist-sync-ui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --check frontend/view.js && node --check frontend/remoteEntry.js",
+    "build": "node frontend/build.mjs"
+  }
+}

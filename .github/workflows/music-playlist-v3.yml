@@ -1,0 +1,100 @@
+name: Music Playlist V3
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'plugins.v3/qqmusicplaylistsync/**'
+      - 'tests/v3/qqmusicplaylistsync/**'
+      - 'icons/MusicPlaylistSync-*.png'
+      - 'package.v3.json'
+      - '.github/scripts/check_plugin_versions.py'
+      - '.github/scripts/check_federation_css.py'
+      - '.github/workflows/music-playlist-v3.yml'
+  pull_request:
+    paths:
+      - 'plugins.v3/qqmusicplaylistsync/**'
+      - 'tests/v3/qqmusicplaylistsync/**'
+      - 'icons/MusicPlaylistSync-*.png'
+      - 'package.v3.json'
+      - '.github/scripts/check_plugin_versions.py'
+      - '.github/scripts/check_federation_css.py'
+      - '.github/workflows/music-playlist-v3.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: python -m pip install pytest
+      - run: python -m compileall -q plugins.v3/qqmusicplaylistsync
+      - run: python .github/scripts/check_plugin_versions.py package.v3.json
+      - name: Check this V3 plugin's federation assets
+        run: |
+          mkdir -p "$RUNNER_TEMP/music-plugin-gate/plugins.v3"
+          cp package.v3.json "$RUNNER_TEMP/music-plugin-gate/"
+          cp -R plugins.v3/qqmusicplaylistsync "$RUNNER_TEMP/music-plugin-gate/plugins.v3/"
+          python .github/scripts/check_federation_css.py --root "$RUNNER_TEMP/music-plugin-gate"
+      - run: python -m pytest -q tests/v3/qqmusicplaylistsync
+      - run: npm --prefix plugins.v3/qqmusicplaylistsync run check
+      - run: npm --prefix plugins.v3/qqmusicplaylistsync run build
+      - run: node --test tests/v3/qqmusicplaylistsync/test_page_ui.mjs
+      - run: git diff --exit-code -- plugins.v3/qqmusicplaylistsync/dist
+      - run: git diff --check
+      - name: Build standard plugin release asset
+        id: version
+        run: |
+          python - <<'PY'
+          import json, os, zipfile
+          from pathlib import Path
+          version = json.loads(Path('package.v3.json').read_text())['QQMusicPlaylistSync']['version']
+          root = Path('plugins.v3')
+          with zipfile.ZipFile(f'qqmusicplaylistsync_v{version}.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
+              for path in sorted((root/'qqmusicplaylistsync').rglob('*')):
+                  if path.is_file() and '__pycache__' not in path.parts and not path.name.startswith('._'):
+                      archive.write(path, path.relative_to(root))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'version={version}\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: music-playlist-plugin
+          path: qqmusicplaylistsync_v*.zip
+
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: music-playlist-plugin
+      - name: Publish new plugin version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PLUGIN_VERSION: ${{ needs.check.outputs.version }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          tag="QQMusicPlaylistSync_v${PLUGIN_VERSION}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release already exists: $tag"
+            exit 0
+          fi
+          gh release create "$tag" "qqmusicplaylistsync_v${PLUGIN_VERSION}.zip" \
+            --target "$COMMIT_SHA" --title "音乐歌单同步 ${PLUGIN_VERSION}" \
+            --notes '持续同步 QQ 与网易云公开歌单，保持单曲订阅，分轨专辑只选歌单歌曲；包含 Vue 交互页面与音乐同步图标。'
