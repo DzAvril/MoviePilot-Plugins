@@ -67,8 +67,9 @@ def test_page_routes_require_login_and_preserve_existing_api_key_routes():
     from types import SimpleNamespace
     from test_selected_downloads import plugin_methods
     endpoint = lambda: None
-    plugin = SimpleNamespace(**{name: endpoint for name in ('sync', 'status', 'selection_details', 'page_data', 'page_downloads')})
+    plugin = SimpleNamespace(**{name: endpoint for name in ('sync', 'status', 'selection_details', 'maintain_downloads', 'page_data', 'page_downloads')})
     routes = plugin_methods({'get_api'}, {})['get_api'](plugin)
+    assert next(route for route in routes if route['path']=='/maintain_downloads')['methods']==['POST']
     by_path = {route['path']: route for route in routes}
     for path in ('/sync', '/status', '/selection'):
         assert by_path[path]['auth'] == 'apikey'

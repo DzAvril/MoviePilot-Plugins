@@ -33,14 +33,15 @@ from .page import download_cards, page_projection
 from .lifecycle import song_lifecycle
 from .library import LibraryIndexCache
 from .history import RETENTION_DAYS, cleanup_due, expired, local_source_absent, retired_download, prune_history
+from .seeding import maintain_entry, retention_days
 
 
 class QQMusicPlaylistSync(_PluginBase):
     """同步公开歌单并通过原生单曲订阅安全下载所需音轨。"""
     plugin_name = "音乐歌单同步"
-    plugin_desc = "持续同步 QQ 与网易云歌单，保持单曲订阅，从分轨专辑只下载歌单歌曲，跳过 CUE。"
+    plugin_desc = "持续同步 QQ 与网易云歌单，整专下载做种、仅歌单歌曲入库，支持到期清理未入库歌曲。"
     plugin_icon = "https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/main/icons/MusicPlaylistSync-1.7.1.png"
-    plugin_version = "1.8.2"
+    plugin_version = "1.9.0"
     plugin_author = "DzAvril"
     author_url = "https://github.com/DzAvril"
     plugin_config_prefix = "qqmusicplaylistsync_"
@@ -65,10 +66,12 @@ class QQMusicPlaylistSync(_PluginBase):
             "library_path": "",
             "downloader": "",
             "dry_run": True,
+            "unselected_cleanup_days": 0,
             **(config or {}),
         }
         self._config["interval"] = max(1, min(1440, int(self._config.get("interval") or 60)))
         self._config["subscribe_workers"] = max(1, min(8, int(self._config.get("subscribe_workers") or 4)))
+        self._config["unselected_cleanup_days"] = retention_days(self._config.get("unselected_cleanup_days"))
         for key in ("downloader", "save_path", "library_path"):
             self._config[key] = str(self._config.get(key) or "").strip()
         if "playlist_urls" not in (config or {}):
@@ -162,6 +165,7 @@ class QQMusicPlaylistSync(_PluginBase):
         return {"downloader": options["downloader"] or self._default_downloader(),
                 "save_path": str(path) if path else None, "download_storage": storage,
                 "library_path": library, "library_storage": library_storage,
+                "transfer_type": getattr(directory, "transfer_type", None),
                 "follow_mp": {key: not bool(self._config[key]) for key in ("downloader", "save_path", "library_path")},
                 "error": error or ("MP 尚未配置匹配的音乐库目录" if not library else "")}
 
@@ -190,6 +194,8 @@ class QQMusicPlaylistSync(_PluginBase):
             plan = self._file_plan(context.media_info, prepared.file_list)
             if not plan["allowed"]:
                 raise SelectionError(plan["reason"])
+            if self._resolved_settings().get("transfer_type") not in ("link", "copy"):
+                raise SelectionError("整专做种需要 MP 音乐目录使用硬链接或复制整理，任务未启动")
             torrent_hash = TorrentHelper.get_torrent_hash(prepared.torrent_content)
             if not torrent_hash:
                 raise SelectionError("无法核验种子身份，任务未启动")
@@ -237,13 +243,18 @@ class QQMusicPlaylistSync(_PluginBase):
                 if not previous.issubset(set(prepared.file_list)):
                     raise SelectionError("已保存的选曲清单与种子不一致，任务保持暂停")
                 wanted = previous.union(plan["files"])
-                selected = choose_files(server, torrent_hash, prepared.folder_name, prepared.file_list, wanted)
+                # 下载清单包含整张专辑；原生整理清单仍然只包含已匹配的歌单歌曲。
+                choose_files(server, torrent_hash, prepared.folder_name, prepared.file_list, prepared.file_list)
+                selected = [name for name in prepared.file_list if name in wanted]
                 layout = "Original"
                 # 明确登记选中文件，避免把未选音轨记为已下载。
                 entry = {"hash": torrent_hash, "downloader": actual_downloader, "title": prepared.torrent.title,
                          "files": selected, "audio_count": plan["audio_count"],
                          "matches": {**(entry or {}).get("matches", {}), **plan["matches"]},
                          "source_root": str(source_root), "fullpaths": [str(source_dir / file) for file in selected],
+                         "download_files": list(prepared.file_list), "download_mode": "full_album",
+                         "download_dir": str(prepared.download_dir), "qb_save_path": str(normalized_dir),
+                         "folder_name": prepared.folder_name,
                          "at": time.time(), "phase": "verified", "error": ""}
                 registry[torrent_hash] = entry
                 self.save_data("selected_downloads", registry)
@@ -263,12 +274,12 @@ class QQMusicPlaylistSync(_PluginBase):
                 tags = {part.strip() for part in str(paused.get("tags") or "").split(",")}
                 if "已整理" in tags or (tag and tag not in tags) or "QQ歌单选曲" not in tags:
                     raise SelectionError("下载器整理标签回读失败，任务保持暂停")
-                choose_files(server, torrent_hash, prepared.folder_name, prepared.file_list, wanted)
+                choose_files(server, torrent_hash, prepared.folder_name, prepared.file_list, prepared.file_list)
                 if not server.start_torrents(ids=[torrent_hash]):
                     raise SelectionError("选曲已保存，但启动失败，任务保持暂停")
                 entry.update(phase="started", error="")
                 self.save_data("selected_downloads", registry)
-                logger.info(f"QQ 歌单选曲下载：{context.media_info.title}，只选 {len(selected)}/{plan['audio_count']} 首")
+                logger.info(f"歌单整专下载做种：{context.media_info.title}，仅 {len(selected)}/{plan['audio_count']} 首入库")
                 return torrent_hash, None
         except Exception as error:
             # 只有已经核验归属并进入暂停/新建阶段的任务才允许回收暂停。
@@ -295,9 +306,15 @@ class QQMusicPlaylistSync(_PluginBase):
         path = Path(item.path)
         for entry in (self.get_data("selected_downloads") or {}).values():
             root = Path(entry["source_root"])
-            if path.is_relative_to(root) and str(path) not in entry.get("fullpaths", []):
-                data.cancel, data.source, data.reason = True, self.plugin_name, "QQ 歌单未选中的文件不整理"
-                break
+            if path.is_relative_to(root):
+                reason = ""
+                if str(path) not in entry.get("fullpaths", []):
+                    reason = "歌单未选中的文件不整理"
+                elif entry.get("download_mode") == "full_album" and getattr(data, "transfer_type", None) not in (None, "link", "copy"):
+                    reason = "做种源文件需保留，请将音乐整理方式设为硬链接或复制"
+                if reason:
+                    data.cancel, data.source, data.reason = True, self.plugin_name, reason
+                    break
         return event
 
     def selection_details(self, torrent_hash: str = ""):
@@ -715,6 +732,7 @@ class QQMusicPlaylistSync(_PluginBase):
                 search_queued = 0
                 if self._config["immediate_search"] and not self._stop.is_set():
                     search_queued = self._queue_search()
+                self.maintain_downloads()
                 self._cleanup_history(now)
                 self._state["last_metrics"] = {
                     "fetch_seconds": round(fetched - started, 3),
@@ -750,6 +768,7 @@ class QQMusicPlaylistSync(_PluginBase):
                                 "history_retention_days": RETENTION_DAYS,
                                 "last_cleanup": state.get("last_cleanup", {})},
                 "immediate_search": self._config["immediate_search"], "metrics": state.get("last_metrics", {}),
+                "download_mode": "full_album", "unselected_cleanup_days": self._config["unselected_cleanup_days"],
                 "last_search": state.get("last_search", {}), "single_track_only": True,
                 "split_album_selection": True, "skip_cue": True, "adapter_error": self._adapter_error,
                 "selected_downloads": list((self.get_data("selected_downloads") or {}).values())[-10:],
@@ -761,6 +780,7 @@ class QQMusicPlaylistSync(_PluginBase):
             {"path": "/sync", "endpoint": self.sync, "methods": ["POST"], "auth": "apikey", "summary": "立即同步 QQ 歌单"},
             {"path": "/status", "endpoint": self.status, "methods": ["GET"], "auth": "apikey", "summary": "QQ 歌单同步状态"},
             {"path": "/selection", "endpoint": self.selection_details, "methods": ["GET"], "auth": "apikey", "summary": "读取歌单选曲任务的真实文件优先级"},
+            {"path": "/maintain_downloads", "endpoint": self.maintain_downloads, "methods": ["POST"], "auth": "apikey", "summary": "补全整专下载并检查到期未入库歌曲"},
             {"path": "/page_data", "endpoint": self.page_data, "methods": ["GET"], "auth": "bear", "summary": "歌单页面数据"},
             {"path": "/page_downloads", "endpoint": self.page_downloads, "methods": ["GET"], "auth": "bear", "summary": "歌单页面实时下载进度"},
             {"path": "/page_sync", "endpoint": self.sync, "methods": ["POST"], "auth": "bear", "summary": "从歌单页面立即同步"},
@@ -852,6 +872,53 @@ class QQMusicPlaylistSync(_PluginBase):
             if not result.has_next:
                 return active
             page += 1
+
+    def maintain_downloads(self):
+        """按同步间隔维护本插件任务；默认不清理，页面读取不触发写操作。"""
+        if not self.get_state() or self._config.get("dry_run") or self._stop.is_set():
+            return {"success": False, "message": "插件未启用或处于预览模式"}
+        directory = self.get_data_path()
+        directory.mkdir(parents=True, exist_ok=True)
+        with (directory / "download-maintenance.lock").open("a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return {"success": False, "message": "已有下载维护任务运行中"}
+            with self._selection_lock:
+                registry = self.get_data("selected_downloads") or {}
+                settings = self._resolved_settings()
+                if settings.get("transfer_type") not in ("link", "copy"):
+                    return {"success": False, "message": "音乐整理需使用硬链接或复制，下载文件已保留"}
+                state = self.get_data(self.STATE_KEY) or self._state
+                changed, cleaned, deferred = 0, 0, 0
+                for key, entry in registry.items():
+                    if self._stop.is_set():
+                        break
+                    entry["hash"] = key
+                    before = deepcopy(entry)
+                    try:
+                        service = self._qb_service(entry["downloader"])
+                        target = next((state.get("tracks", {}).get(mid, {}).get("song") for mid in entry.get("matches", {})
+                                       if state.get("tracks", {}).get(mid, {}).get("song")), None)
+                        pending = target is None
+                        if target and entry.get("download_files"):
+                            plan = track_file_selection(target, entry["download_files"],
+                                [item["song"] for item in state.get("tracks", {}).values() if item.get("present")])
+                            pending = bool(set(plan.get("files", [])) - set(entry.get("files", [])))
+                        maintain_entry(entry, service.instance,
+                            normalize=lambda path: str(service.module.normalize_path(path, entry["downloader"])),
+                            settings=settings, days=self._config["unselected_cleanup_days"], now=time.time(),
+                            transfers=lambda: self._status_transfer_rows({"media_types": [MediaType.MUSIC], "download_hash": key}),
+                            save=lambda: self.save_data("selected_downloads", registry),
+                            audio_extensions=self.AUDIO_EXTENSIONS, pending_selection=pending, stopped=self._stop.is_set)
+                        changed += before.get("download_mode") != entry.get("download_mode")
+                        cleaned += before.get("cleanup", {}).get("state") != "done" and entry.get("cleanup", {}).get("state") == "done"
+                    except Exception as error:
+                        entry.setdefault("cleanup", {})["error"] = str(error) if isinstance(error, SelectionError) else "下载维护暂缓，文件保留，下次同步重试"
+                        deferred += 1
+                    if before != entry:
+                        self.save_data("selected_downloads", registry)
+                return {"success": True, "upgraded": changed, "cleaned": cleaned, "deferred": deferred}
 
     def _cleanup_history(self, now):
         """At most daily, retire inactive bookkeeping without weakening selected-file guards."""
@@ -955,6 +1022,8 @@ class QQMusicPlaylistSync(_PluginBase):
             ("VTextField", "interval", "同步间隔（分钟，至少 1）", {"type": "number"}),
             ("VTextField", "subscribe_workers", "同时创建订阅数（1–8，推荐 4）", {"type": "number"}),
             ("VSwitch", "immediate_search", "建好订阅立即搜索下载", {}),
+            ("VTextField", "unselected_cleanup_days", "未入库歌曲保留天数（0 = 不清理）", {"type": "number", "min": 0, "max": 3650,
+                "hint": "整专下载且歌单歌曲全部入库后计时，并要求累计做种达到该天数；到期移除种子，仅删除未入库音频。请按站点做种要求设置。", "persistentHint": True}),
             ("VTextField", "downloader", "下载器（留空跟随 MP 默认）", {"placeholder": "使用 MP 音乐订阅或系统默认下载器", "hint": "分轨选曲需要 qBittorrent", "persistentHint": True}),
             ("VTextField", "save_path", "下载目录（留空跟随 MP 音乐目录）", {"placeholder": "使用设置中的音乐下载目录"}),
             ("VTextField", "library_path", "音乐库目录（留空跟随 MP 音乐目录）", {"placeholder": "使用设置中的音乐库目录", "hint": "用于检查已有歌曲；整理位置由 MP 目录设置决定", "persistentHint": True}),
@@ -963,11 +1032,12 @@ class QQMusicPlaylistSync(_PluginBase):
                     "props": {"model": model, "label": label, **props}}]} for component, model, label, props in fields]
         content.append({"component": "VCol", "props": {"cols": 12}, "content": [{"component": "VAlert",
                         "props": {"type": "info", "variant": "tonal"},
-                        "text": "QQ 与网易云歌单分开填写，每行一个链接或 ID。公开歌单无需登录，同一录音跨平台去重。新增歌曲保持单曲订阅并立即搜索；分轨专辑仅勾选歌单歌曲，CUE 整轨跳过。"}]})
+                        "text": "QQ 与网易云歌单分开填写，每行一个链接或 ID。新增歌曲保持单曲订阅；分轨专辑完整下载做种，仅歌单歌曲通过 MP 入库。音乐目录需使用硬链接或复制，CUE 整轨跳过。"}]})
         return [{"component": "VForm", "content": [{"component": "VRow", "content": content}]}], {
             "enabled": False, "dry_run": True, "playlist_urls": self._config.get("playlist_urls", ""), "interval": 60,
             "netease_playlist_urls": self._config.get("netease_playlist_urls", ""),
             "subscribe_workers": 4, "immediate_search": True,
+            "unselected_cleanup_days": 0,
             "downloader": "", "save_path": "", "library_path": "",
         }
 

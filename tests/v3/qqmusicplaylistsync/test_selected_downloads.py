@@ -162,7 +162,7 @@ class Prepared:
 
 
 def submission(monkeypatch, *, existing=False, failure=None, registry=None, owned=True, single=False,
-               download_dir='/sata/Download/Music', music_source='qqmusic'):
+               download_dir='/sata/Download/Music', music_source='qqmusic', transfer_type='link'):
     install_fake_modules(monkeypatch)
     qb = QB(existing)
     qb.row.update(save_path=download_dir,content_path=download_dir+'/album')
@@ -183,6 +183,7 @@ def submission(monkeypatch, *, existing=False, failure=None, registry=None, owne
                           core.media_key(music_source,'two'):dict(song=song(core.media_key(music_source,'two'),'山川'),present=True)}},
         get_data=lambda key:deepcopy(data.get(key)), save_data=lambda k,v:data.update({k:deepcopy(v)}),
         _download_options=lambda:dict(downloader='QB',save_path=None),_default_downloader=lambda:'QB',
+        _resolved_settings=lambda:dict(transfer_type=transfer_type),
         _qb_service=lambda _:SimpleNamespace(instance=qb, module=SimpleNamespace(normalize_path=lambda p,n:str(p))))
     for name in ('_file_plan','guard_selected_transfer'):
         setattr(plugin,name,MethodType(ns[name],plugin))
@@ -210,7 +211,9 @@ def test_new_task_is_added_paused_selected_read_back_recorded_then_resumed(monke
     assert qb.calls[0] == ('add',True)
     assert qb.calls.index('native-history') < qb.calls.index('resume')
     assert hist[0].file_list == [FILES[0], FILES[2]]
-    assert {row['index'] for row in qb.files if row['priority']} == {12,8}
+    assert {row['index'] for row in qb.files if row['priority']} == {12,4,8,21}
+    assert data['selected_downloads']['a'*40]['download_files'] == FILES
+    assert data['selected_downloads']['a'*40]['files'] == [FILES[0],FILES[2]]
     assert data['selected_downloads']['a'*40]['phase'] == 'started'
     assert '已整理' not in qb.row['tags'] and 'QQ歌单选曲' in qb.row['tags']
 
@@ -228,11 +231,26 @@ def test_existing_qq_task_is_reused_and_existing_unrelated_task_is_untouched(mon
     assert result[0] is None and not hist and not qb.calls
 
 
-def test_later_song_selection_unions_already_verified_tracks_without_restoring_whole_album(monkeypatch):
+def test_later_song_unions_import_whitelist_while_entire_album_remains_selected(monkeypatch):
     prior={'a'*40:dict(hash='a'*40,downloader='QB',files=[FILES[1]],matches={},source_root='/sata/Download/Music/album')}
     qb,data,hist,result,_=submission(monkeypatch,existing=True,registry=prior)
     assert result[0] == 'a'*40 and set(hist[0].file_list) == set(FILES[:3])
-    assert qb.files[-1]['priority'] == 0
+    assert all(file['priority'] == 1 for file in qb.files)
+
+
+@pytest.mark.parametrize('transfer_type', ['move', 'softlink', None])
+def test_full_album_submission_refuses_source_destructive_or_unverified_transfer_modes(monkeypatch,transfer_type):
+    qb,_,hist,result,_=submission(monkeypatch,transfer_type=transfer_type)
+    assert result[0] is None and not hist and not qb.calls
+
+
+def test_full_album_transfer_guard_allows_link_and_copy_but_blocks_move(monkeypatch):
+    _,_,_,_,plugin=submission(monkeypatch)
+    for mode,blocked in [('link',False),('copy',False),('move',True),('softlink',True)]:
+        event=SimpleNamespace(event_data=SimpleNamespace(cancel=False,transfer_type=mode,
+            fileitem=SimpleNamespace(storage='local',path='/sata/Download/Music/album/'+FILES[0])))
+        plugin.guard_selected_transfer(event)
+        assert event.event_data.cancel == blocked
 
 
 def test_unwanted_existing_audio_cannot_be_organized_but_other_paths_can(monkeypatch):

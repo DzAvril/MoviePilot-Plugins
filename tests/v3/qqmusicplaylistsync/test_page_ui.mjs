@@ -3,7 +3,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 
 const source = await readFile(new URL('../../../plugins.v3/qqmusicplaylistsync/dist/assets/view.js', import.meta.url), 'utf8');
-const {filterSongs, paginate, downloadStatus, applySongStates, createPlaylistCover} = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+const {filterSongs, paginate, downloadStatus, cleanupText, applySongStates, createPlaylistCover} = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 const songs = Array.from({length:321}, (_, i) => ({id:String(i),title:`歌曲${i}`,artists:['歌手'],album:'专辑',
   playlist_ids:i%2 ? ['one'] : ['one','two'],status:i<20 ? 'library' : 'searching'}));
 
@@ -53,7 +53,38 @@ test('the Vue settings form preserves unknown fields and blank MP defaults when 
   assert.equal(saved.netease_playlist_urls,'https://music.163.com/#/my/m/music/playlist?id=80068278');
   assert.equal(saved.enabled,true);
   assert.equal(saved.dry_run,false);
+  assert.equal(saved.unselected_cleanup_days,0);
   for (const key of ['downloader','save_path','library_path']) assert.equal(saved[key],'');
+});
+
+test('full album download and cleanup statuses distinguish task removal from an error', () => {
+  assert.equal(downloadStatus({download_mode:'full_album',progress:1,state:'queuedUP'}).text,'整专下载完成');
+  assert.equal(downloadStatus({cleanup:{state:'done'},state:'missing'}).text,'未入库歌曲已清理');
+  assert.match(cleanupText({},0),/自动清理已关闭/);
+  assert.match(cleanupText({cleanup:{state:'waiting_library'}},7),/全部入库/);
+  assert.match(cleanupText({cleanup:{due_at:1900000000}},7),/累计做种 7 天/);
+  assert.match(cleanupText({cleanup:{state:'done',deleted:3}},7),/清理 3 首/);
+});
+
+test('retention settings save only whole days within bounds and keep the 60 minute interval', async () => {
+  const {createConfig}=await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+  const Vue={defineComponent:v=>v,reactive:v=>v,ref:value=>({value}),onMounted:()=>{},
+    h:(type,props,children)=>({type,props,children})};
+  for (const value of ['7','0','-1','1.5','oops','3651']) {
+    const events=[];
+    const tree=createConfig(Vue).setup({initialConfig:{unselected_cleanup_days:value}}, {emit:(...args)=>events.push(args)})();
+    const visit=node=>{
+      if (!node || typeof node!=='object') return;
+      if (node.type==='button' && node.props?.['aria-label']==='保存设置') node.props.onClick();
+      for (const child of [node.props,node.children].flat()) if (child && typeof child==='object') visit(child);
+    };
+    visit(tree);
+    const saved=events.find(event=>event[0]==='save')?.[1];
+    if (['7','0'].includes(value)) {
+      assert.equal(saved.unselected_cleanup_days,Number(value));
+      assert.equal(saved.interval,60);
+    } else assert.equal(saved,undefined);
+  }
 });
 
 test('live song updates replace subscription labels with actual lifecycle while preserving search metadata', () => {

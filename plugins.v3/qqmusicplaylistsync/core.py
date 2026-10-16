@@ -228,7 +228,7 @@ def track_file_selection(song: dict, files: list[str], related_songs=()) -> dict
             selected.add(found[0])
             matches[str(other["mid"])] = found[0]
     result.update(allowed=True, files=[str(p) for p in audio if str(p) in selected], matches=matches,
-                  reason=f"已核验分轨：只选 {len(selected)}/{len(audio)} 首歌单歌曲")
+                  reason=f"已核验分轨：仅 {len(selected)}/{len(audio)} 首歌单歌曲入库")
     return result
 
 

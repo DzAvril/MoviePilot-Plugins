@@ -34,17 +34,30 @@ export function applySongStates(data, response) {
 }
 
 export function downloadStatus(item) {
+  if (item.cleanup?.state === 'done') return {text: '未入库歌曲已清理', tone: 'green'};
   if (item.error) return {text: '需要检查', tone: 'warn'};
   if (item.live_error) return {text: '进度暂不可用', tone: 'muted'};
   const state = item.state || '';
   if (state === 'missing') return {text: '下载器中未找到', tone: 'muted'};
   if (['error', 'missingFiles', 'unknown'].includes(state)) return {text: '下载异常', tone: 'warn'};
   if (/checking/i.test(state)) return {text: '校验中', tone: 'purple'};
-  if (item.progress >= 1 && item.progress !== null) return {text: '下载完成', tone: 'green'};
+  if (item.progress >= 1 && item.progress !== null) return {text: item.download_mode === 'full_album' ? '整专下载完成' : '下载完成', tone: 'green'};
   if (/paused|stopped/i.test(state)) return {text: '已暂停', tone: 'muted'};
   if (/queued/i.test(state)) return {text: '等待下载', tone: 'muted'};
   if (/DL$|downloading|metaDL/i.test(state)) return {text: '下载中', tone: 'purple'};
   return {text: '已核对选曲', tone: 'muted'};
+}
+
+export function cleanupText(item, days) {
+  const cleanup = item.cleanup || {};
+  if (cleanup.error) return cleanup.error;
+  if (cleanup.state === 'done') return `已结束做种并清理 ${cleanup.deleted || 0} 首未入库歌曲，已入库歌曲保留`;
+  if (!days) return '完整保留专辑做种 · 自动清理已关闭';
+  if (cleanup.state === 'waiting_library') return '等待歌单歌曲全部入库，暂不开始清理计时';
+  if (['removing', 'removed'].includes(cleanup.state)) return '正在结束做种并清理未入库歌曲';
+  if (cleanup.state === 'not_needed') return '整张专辑均需入库，没有待清理歌曲';
+  if (cleanup.due_at) return `最早清理：${new Date(cleanup.due_at * 1000).toLocaleString('zh-CN', {hour12: false})} · 还需满足累计做种 ${days} 天`;
+  return `整专下载且歌单歌曲全部入库后，至少保留并做种 ${days} 天`;
 }
 
 function unwrap(response) {
@@ -174,13 +187,14 @@ export function createPage(Vue) {
         return h('article', {class: 'qqm-download-card', key: item.id}, [
           h('div', {class: 'qqm-task-top'}, [h('div', {class: 'qqm-task-icon'}, icon('download')),
             h('div', {class: 'qqm-task-name'}, [h('h4', item.title), h('p', item.artists.join(' / ') || '歌单歌曲')]), badge(state.text, state.tone)]),
-          h('div', {class: 'qqm-progress-heading'}, [h('span', [h('strong', `${item.selected}`), ` / ${item.total || '?'} 首已选`]),
+          h('div', {class: 'qqm-progress-heading'}, [h('span', [h('strong', `${item.selected}`), ` / ${item.total || '?'} 首计划入库 · ${item.download_mode === 'full_album' ? '整专下载' : '等待补全'}`]),
             h('span', progress === null ? (refreshingDownloads.value ? '正在读取进度…' : '暂无进度') : `${progress}%`)]),
           h('div', {class: 'qqm-progress', role: 'progressbar', 'aria-label': `${item.title}下载进度`,
             'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': progress ?? undefined},
             h('div', {style: {width: `${progress ?? 0}%`}})),
           item.error && h('p', {class: 'qqm-error-text'}, item.error),
           item.live_error && h('p', {class: 'qqm-muted qqm-small'}, item.live_error),
+          h('p', {class: `qqm-small ${item.cleanup?.error ? 'qqm-error-text' : 'qqm-muted'}`}, cleanupText(item, data.value.unselected_cleanup_days)),
           h('details', {class: 'qqm-track-details'}, [h('summary', [`查看 ${item.selected} 首选曲`, icon('arrow')]),
             h('p', {class: 'qqm-resource'}, item.resource), h('ol', item.files.map(file => h('li', file)))])]);
       };
@@ -225,7 +239,8 @@ export function createPage(Vue) {
             h('div', {class: 'qqm-setting-row'}, [h('span', label), h('code', data.value.settings[key] || '未配置'),
               badge(data.value.settings.follow_mp?.[key] ? '跟随 MP' : '插件配置')])),
           data.value.settings.error && h('p', {class: 'qqm-error-text'}, data.value.settings.error),
-          h('p', {class: 'qqm-rule'}, '保持单曲订阅 · 分轨专辑只下载歌单歌曲 · CUE 整轨跳过'),
+          h('p', {class: 'qqm-rule'}, '保持单曲订阅 · 整专下载做种 · 仅歌单歌曲入库 · CUE 整轨跳过'),
+          h('p', {class: 'qqm-rule'}, data.value.unselected_cleanup_days ? `未入库歌曲保留 ${data.value.unselected_cleanup_days} 天，满足条件后清理` : '未入库歌曲保留：不自动清理'),
         ])]);
       return () => h('main', {class: 'qqm-root'}, [header(),
         notice.value && h('div', {class: 'qqm-notice', role: 'status'}, [notice.value, button('关闭提示', () => {notice.value = '';}, {icon: 'close', iconOnly: true})]),
@@ -255,7 +270,7 @@ export function createPage(Vue) {
                   p.last_error ? h('p', {class: 'qqm-error-text'}, '读取失败，保留上次结果') : h('span', {class: 'qqm-playlist-status'}, [icon('check'), p.last_fetch ? '同步正常' : '等待同步'])]),
                 button('查看歌曲', () => {playlist.value = p.id; selectStatus('');}, {icon: 'arrow', iconOnly: true})])) :
               [h('div', {class: 'qqm-empty qqm-panel'}, [h('p', '还没有添加歌单'), button('添加音乐歌单', () => emit('switch'), {primary: true})])])]),
-          h('section', [title('最近选曲下载', '只下载歌单需要的音轨，保留原生整理流程。', data.value.downloads.length > 2 ?
+          h('section', [title('最近音乐下载', '专辑完整下载做种，只有歌单歌曲进入音乐库。', data.value.downloads.length > 2 ?
             button(allDownloads.value ? '收起任务' : `查看全部 ${data.value.downloads.length} 个任务`, () => {allDownloads.value = !allDownloads.value;}) : null),
             h('div', {class: 'qqm-downloads', 'aria-busy': refreshingDownloads.value}, data.value.downloads.length ?
               (allDownloads.value ? data.value.downloads : data.value.downloads.slice(0, 2)).map(downloadCard) :
@@ -266,7 +281,7 @@ export function createPage(Vue) {
               badge(check.allowed ? '可选曲' : '已跳过', check.allowed ? 'green' : 'muted'),
               h('div', [h('strong', check.title), h('p', check.reason)]), h('time', time(check.at)),
             ])) : h('p', {class: 'qqm-muted'}, '暂无检查记录'))]),
-          h('footer', {class: 'qqm-footer'}, [h('span', '音乐歌单同步'), h('span', 'v1.8.2')]),
+          h('footer', {class: 'qqm-footer'}, [h('span', '音乐歌单同步'), h('span', 'v1.9.0')]),
         ],
       ]);
     },
@@ -280,7 +295,7 @@ export function createConfig(Vue) {
     name: 'QQMusicConfig', props: {initialConfig: Object}, emits: ['save', 'close', 'switch', 'layout'],
     setup(props, {emit}) {
       const config = reactive({enabled: false, dry_run: true, playlist_urls: '', netease_playlist_urls: '', interval: 60, subscribe_workers: 4,
-        immediate_search: true, downloader: '', save_path: '', library_path: '', ...props.initialConfig});
+        immediate_search: true, downloader: '', save_path: '', library_path: '', unselected_cleanup_days: 0, ...props.initialConfig});
       const error = ref('');
       onMounted(() => emit('layout', {maxWidth: '800px'}));
       const toggle = (key, label, detail) => h('label', {class: 'qqm-toggle-row'}, [h('div', [h('strong', label), h('p', detail)]),
@@ -289,10 +304,14 @@ export function createConfig(Vue) {
         ...attrs, onInput: e => {config[key] = e.target.value;}})]);
       const save = () => {
         const interval = Number(config.interval), workers = Number(config.subscribe_workers);
+        const cleanupDays = Number(config.unselected_cleanup_days);
         if (!Number.isInteger(interval) || interval < 1 || interval > 1440 || !Number.isInteger(workers) || workers < 1 || workers > 8) {
           error.value = '同步间隔需为 1–1440 分钟，同时创建订阅数需为 1–8 的整数。'; return;
         }
-        emit('save', {...config, interval, subscribe_workers: workers});
+        if (!Number.isInteger(cleanupDays) || cleanupDays < 0 || cleanupDays > 3650) {
+          error.value = '未入库歌曲保留天数需为 0–3650 的整数，0 表示不自动清理。'; return;
+        }
+        emit('save', {...config, interval, subscribe_workers: workers, unselected_cleanup_days: cleanupDays});
       };
       return () => h('form', {class: 'qqm-root qqm-config', onSubmit: e => {e.preventDefault(); save();}}, [
         h('header', {class: 'qqm-header'}, [h('div', {class: 'qqm-brand'}, [h('img', {class: 'qqm-logo qqm-logo-image', src: PLUGIN_ICON, alt: '音乐歌单同步图标', width: 54, height: 54}),
@@ -314,8 +333,12 @@ export function createConfig(Vue) {
           field('downloader', '下载器', {placeholder: '跟随 MP 默认下载器'}),
           field('save_path', '下载目录', {placeholder: '跟随 MP 音乐下载目录'}),
           field('library_path', '音乐库目录', {placeholder: '跟随 MP 音乐库目录'}),
-          h('p', {class: 'qqm-rule'}, '分轨选曲需要 qBittorrent；歌曲整理继续使用 MP 的目录设置。'),
+          h('p', {class: 'qqm-rule'}, '需要 qBittorrent；整张分轨专辑下载做种，仅歌单歌曲入库。MP 音乐目录需使用硬链接或复制整理。'),
           h('p', {class: 'qqm-rule'}, '音乐目录每 10 分钟重新核对，下载进度每 15 秒更新。过期历史每天清理，保留 90 天；使用中的订阅和选曲保护记录继续保留。')]),
+        h('section', {class: 'qqm-panel qqm-config-section'}, [title('做种与空间清理', '默认保留完整专辑，可按 PT 站点做种要求设置清理期限。'),
+          field('unselected_cleanup_days', '未入库歌曲保留天数', {type: 'number', min: 0, max: 3650}),
+          h('p', {class: 'qqm-rule'}, '0 表示不自动清理。整专下载且歌单歌曲全部入库后开始计时，并要求累计做种达到该天数；暂停时间会延后清理。'),
+          h('p', {class: 'qqm-rule'}, '到期后先移除做种任务，再只删除未入库音频；音乐库、已入库歌曲的下载源文件及封面等附件保留。每次歌单同步时检查，不影响 60 分钟的同步设置。')]),
         error.value && h('p', {class: 'qqm-error-text', role: 'alert'}, error.value),
         h('div', {class: 'qqm-config-actions'}, [button('取消', () => emit('close')), button('保存设置', save, {primary: true, icon: 'check'})]),
       ]);

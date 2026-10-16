@@ -17,6 +17,9 @@ def download_cards(registry, tracks, read_download=None):
             "files": [PurePosixPath(name).name for name in entry.get("files", [])],
             "selected": len(entry.get("files", [])), "total": entry.get("audio_count"),
             "phase": entry.get("phase", ""), "error": entry.get("error", ""),
+            "download_mode": entry.get("download_mode", "selected"),
+            "cleanup": {key: entry.get("cleanup", {}).get(key) for key in
+                        ("state", "ready_at", "due_at", "seed_seconds", "deleted", "finished_at", "error")},
             "at": entry.get("at"), "state": None, "progress": None, "live_error": "",
         }
         if read_download:
@@ -57,12 +60,13 @@ def page_projection(state, overview, config, settings, registry, checks, adapter
                      ("tracked", "subscribed", "library", "pending", "failed", "last_sync", "last_fetch", "last_error")},
         "enabled": bool(config.get("enabled")), "dry_run": bool(config.get("dry_run")),
         "interval_minutes": config.get("interval", 60), "immediate_search": bool(config.get("immediate_search")),
+        "unselected_cleanup_days": config.get("unselected_cleanup_days", 0),
         "adapter_error": adapter_error, "playlists": playlists, "songs": songs,
         "status_counts": dict(Counter(song["status"] for song in songs)),
         "status_updated_at": None, "status_warning": "",
         "unavailable": len(overview.get("playlist", {}).get("unavailable", [])),
         "settings": {key: settings.get(key) for key in
-                     ("downloader", "save_path", "library_path", "follow_mp", "error")},
+                     ("downloader", "save_path", "library_path", "follow_mp", "transfer_type", "error")},
         "downloads": download_cards(registry, state.get("tracks", {})),
         "checks": [{key: check.get(key) for key in ("at", "title", "allowed", "reason")}
                    for check in checks if check.get("version")][-8:][::-1],

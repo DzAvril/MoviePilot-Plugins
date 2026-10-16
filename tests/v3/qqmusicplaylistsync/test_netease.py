@@ -161,7 +161,7 @@ def test_netease_uses_same_pause_select_verify_and_resume_download_flow(monkeypa
     assert result == ('a'*40,None)
     assert history[0].file_list == [FILES[0],FILES[2]]
     assert qb.calls.index('native-history') < qb.calls.index('resume')
-    assert {row['index'] for row in qb.files if row['priority']} == {12,8}
+    assert {row['index'] for row in qb.files if row['priority']} == {12,4,8,21}
 
 
 def test_netease_subscriptions_are_dispatched_immediately_in_manual_queue():
