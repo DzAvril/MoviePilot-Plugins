@@ -31,6 +31,8 @@ from .core import (PlaylistError, MUSIC_SOURCES, fetch_playlist, fetch_netease_p
 from .selected import RuntimeAdapter, SelectionError, choose_files, ensure_paused, task_info
 from .page import download_cards, page_projection
 from .lifecycle import song_lifecycle
+from .library import LibraryIndexCache
+from .history import RETENTION_DAYS, cleanup_due, expired, local_source_absent, retired_download, prune_history
 
 
 class QQMusicPlaylistSync(_PluginBase):
@@ -38,7 +40,7 @@ class QQMusicPlaylistSync(_PluginBase):
     plugin_name = "音乐歌单同步"
     plugin_desc = "持续同步 QQ 与网易云歌单，保持单曲订阅，从分轨专辑只下载歌单歌曲，跳过 CUE。"
     plugin_icon = "https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/main/icons/MusicPlaylistSync-1.7.1.png"
-    plugin_version = "1.7.2"
+    plugin_version = "1.8.0"
     plugin_author = "DzAvril"
     author_url = "https://github.com/DzAvril"
     plugin_config_prefix = "qqmusicplaylistsync_"
@@ -56,7 +58,7 @@ class QQMusicPlaylistSync(_PluginBase):
             "enabled": False,
             "playlist_urls": "",
             "netease_playlist_urls": "",
-            "interval": 1,
+            "interval": 60,
             "subscribe_workers": 4,
             "immediate_search": True,
             "save_path": "",
@@ -65,7 +67,7 @@ class QQMusicPlaylistSync(_PluginBase):
             "dry_run": True,
             **(config or {}),
         }
-        self._config["interval"] = max(1, min(1440, int(self._config.get("interval") or 1)))
+        self._config["interval"] = max(1, min(1440, int(self._config.get("interval") or 60)))
         self._config["subscribe_workers"] = max(1, min(8, int(self._config.get("subscribe_workers") or 4)))
         for key in ("downloader", "save_path", "library_path"):
             self._config[key] = str(self._config.get(key) or "").strip()
@@ -78,7 +80,7 @@ class QQMusicPlaylistSync(_PluginBase):
         self._selection_lock = threading.RLock()
         self._status_lock = threading.Lock()
         self._status_library_files = {}
-        self._status_tag_cache = {}
+        self._status_index = LibraryIndexCache()
         self._adapter = RuntimeAdapter(self)
         self._adapter_error = ""
         try:
@@ -713,6 +715,7 @@ class QQMusicPlaylistSync(_PluginBase):
                 search_queued = 0
                 if self._config["immediate_search"] and not self._stop.is_set():
                     search_queued = self._queue_search()
+                self._cleanup_history(now)
                 self._state["last_metrics"] = {
                     "fetch_seconds": round(fetched - started, 3),
                     "index_seconds": round(indexed - fetched, 3),
@@ -742,6 +745,10 @@ class QQMusicPlaylistSync(_PluginBase):
         return {"success": True, "enabled": self.get_state(), "dry_run": self._config.get("dry_run"),
                 "resolved_settings": resolved,
                 "interval_minutes": self._config["interval"], "subscribe_workers": self._config["subscribe_workers"],
+                "maintenance": {"library_scan_interval_seconds": self._status_index.ttl,
+                                "library_index": self._status_index.snapshot(),
+                                "history_retention_days": RETENTION_DAYS,
+                                "last_cleanup": state.get("last_cleanup", {})},
                 "immediate_search": self._config["immediate_search"], "metrics": state.get("last_metrics", {}),
                 "last_search": state.get("last_search", {}), "single_track_only": True,
                 "split_album_selection": True, "skip_cue": True, "adapter_error": self._adapter_error,
@@ -827,6 +834,62 @@ class QQMusicPlaylistSync(_PluginBase):
                 tasks[torrent_hash] = task
         return tasks
 
+    def _cached_library_index(self, state, wanted, settings):
+        return self._status_index.get(
+            settings=settings, wanted=wanted,
+            titles={text_key(item["song"]["title"]) for item in state.get("tracks", {}).values() if item.get("present")},
+            scan=self._library_index, stopped=self._stop.is_set,
+        )
+
+    def _active_subscription_keys(self):
+        """Finished native history is not an active subscription retention requirement."""
+        active, page = set(), 1
+        while True:
+            result = list_subscriptions({"media_types": [MediaType.MUSIC]}, {"page": page, "count": 200})
+            active.update(track_key(self._state, item.media_source, item.media_id) for item in result.items
+                          if str(item.media_source or "") in MUSIC_SOURCES)
+            if not result.has_next:
+                return active
+            page += 1
+
+    def _cleanup_history(self, now):
+        """At most daily, retire inactive bookkeeping without weakening selected-file guards."""
+        if self._stop.is_set() or not cleanup_due(self._state, now):
+            return
+        try:
+            active = self._active_subscription_keys()
+            settings = self._resolved_settings()
+            # Download submissions update this same registry under the same lock.
+            with self._selection_lock:
+                registry = self.get_data("selected_downloads") or {}
+                candidates = {key: entry for key, entry in registry.items()
+                              if expired(entry.get("at"), now) and entry.get("phase") == "started"
+                              and not active.intersection(entry.get("matches", {}))}
+                tasks = self._status_download_tasks(candidates, set()) if candidates else {}
+                retired = []
+                for key, entry in candidates.items():
+                    if self._stop.is_set():
+                        return
+                    task = tasks.get(key, {})
+                    if not task.get("success") or task.get("state") != "missing":
+                        continue
+                    rows = self._status_transfer_rows({"media_types": [MediaType.MUSIC], "download_hash": key})
+                    if retired_download({**entry, "hash": key}, task, rows, now=now,
+                                        source_absent=local_source_absent,
+                                        file_exists=lambda path, storage: self._status_file_exists(path, storage, settings)):
+                        retired.append(key)
+                for key in retired:
+                    del registry[key]
+                counts = prune_history(self._state, registry, now=now, active_subscriptions=active)
+                if retired:
+                    self.save_data("selected_downloads", registry)
+                self._state["last_cleanup"] = {"at": now, "retention_days": RETENTION_DAYS,
+                                               **counts, "downloads": len(retired)}
+                self._save(self._state)
+        except Exception:
+            # Missing host facts never authorize deleting protective records; retry next sync.
+            logger.warning("歌单历史清理暂缓，保留原记录，下次同步重试")
+
     def page_downloads(self):
         with self._status_lock:
             state = self.get_data(self.STATE_KEY) or {"tracks": {}}
@@ -862,8 +925,7 @@ class QQMusicPlaylistSync(_PluginBase):
             confirmed = song_lifecycle(state, registry, {}, transfers, library_files=lifecycle["library_files"], file_exists=exists)
             missing = {mid: state["tracks"][mid]["song"] for mid in confirmed["states"] if mid not in confirmed["library_files"]}
             try:
-                index = self._library_index(wanted={text_key(song["title"]) for song in missing.values()},
-                                            tag_cache=self._status_tag_cache, settings=settings)
+                index = self._cached_library_index(state, {text_key(song["title"]) for song in missing.values()}, settings)
                 for mid, song in missing.items():
                     path = next((index[(text_key(song["title"]), text_key(artist))] for artist in song.get("artists", [])
                                  if (text_key(song["title"]), text_key(artist)) in index), None)
@@ -902,7 +964,7 @@ class QQMusicPlaylistSync(_PluginBase):
                         "props": {"type": "info", "variant": "tonal"},
                         "text": "QQ 与网易云歌单分开填写，每行一个链接或 ID。公开歌单无需登录，同一录音跨平台去重。新增歌曲保持单曲订阅并立即搜索；分轨专辑仅勾选歌单歌曲，CUE 整轨跳过。"}]})
         return [{"component": "VForm", "content": [{"component": "VRow", "content": content}]}], {
-            "enabled": False, "dry_run": True, "playlist_urls": self._config.get("playlist_urls", ""), "interval": 1,
+            "enabled": False, "dry_run": True, "playlist_urls": self._config.get("playlist_urls", ""), "interval": 60,
             "netease_playlist_urls": self._config.get("netease_playlist_urls", ""),
             "subscribe_workers": 4, "immediate_search": True,
             "downloader": "", "save_path": "", "library_path": "",

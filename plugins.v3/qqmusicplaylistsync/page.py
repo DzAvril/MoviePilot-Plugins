@@ -52,7 +52,7 @@ def page_projection(state, overview, config, settings, registry, checks, adapter
         "overview": {key: overview.get(key, 0) for key in
                      ("tracked", "subscribed", "library", "pending", "failed", "last_sync", "last_fetch", "last_error")},
         "enabled": bool(config.get("enabled")), "dry_run": bool(config.get("dry_run")),
-        "interval_minutes": config.get("interval", 1), "immediate_search": bool(config.get("immediate_search")),
+        "interval_minutes": config.get("interval", 60), "immediate_search": bool(config.get("immediate_search")),
         "adapter_error": adapter_error, "playlists": playlists, "songs": songs,
         "status_counts": dict(Counter(song["status"] for song in songs)),
         "status_updated_at": None, "status_warning": "",

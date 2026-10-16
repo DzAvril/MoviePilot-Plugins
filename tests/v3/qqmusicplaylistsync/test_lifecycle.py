@@ -223,12 +223,12 @@ def test_live_endpoint_accepts_verified_existing_tags_despite_duplicate_transfer
     paths={'/music/a.flac'}
     needed_calls=[]
     plugin=SimpleNamespace(STATE_KEY='state',SOURCE='qqmusic',_status_lock=Lock(),
-        _status_library_files={},_status_tag_cache={},
+        _status_library_files={},
         get_data=lambda key: state if key=='state' else registry,
         _resolved_settings=lambda:{'library_path':'/music','library_storage':'local'},
         _status_file_exists=lambda path,storage,settings:path in paths,
         _status_transfer_rows=lambda filters:[transfer(success=False,download_hash='older-resource')],
-        _library_index=lambda **kwargs:{(core.text_key('歌曲A'),core.text_key('李荣浩')):'/music/a.flac'})
+        _cached_library_index=lambda *args:{(core.text_key('歌曲A'),core.text_key('李荣浩')):'/music/a.flac'})
     def read_tasks(registry,needed):
         needed_calls.append(set(needed))
         return {}

@@ -332,11 +332,16 @@ def merge_playlists(previous, snapshots, errors, configured, now):
     playlists = state["playlists"]
     for pid, entry in playlists.items():
         entry["enabled"] = pid in configured
+        if entry["enabled"]:
+            entry.pop("disabled_since", None)
+        else:
+            entry.setdefault("disabled_since", now)
     for pid in configured:
         platform = "netease" if pid.startswith("netease:") else "qqmusic"
         entry = playlists.setdefault(pid, {"id": pid, "title": f"{'网易云' if platform == 'netease' else 'QQ'} 歌单 {pid.split(':')[-1]}", "total": 0, "mids": []})
         entry["source"] = platform
         entry.update(enabled=True, last_attempt=now)
+        entry.pop("disabled_since", None)
         if pid in snapshots:
             snapshot = snapshots[pid]
             for song in snapshot["songs"]:
@@ -373,6 +378,11 @@ def merge_playlists(previous, snapshots, errors, configured, now):
                 tracks[mid]["playlist_ids"].append(pid)
     for item in tracks.values():
         item["present"] = bool(item["playlist_ids"])
+        if item["present"]:
+            item.pop("inactive_since", None)
+        else:
+            # Legacy inactive rows get a full retention window starting on migration.
+            item.setdefault("inactive_since", now)
     unavailable = [item for pid in configured for item in playlists[pid].get("unavailable", [])]
     state["playlist"] = {
         "id": configured[0] if len(configured) == 1 else "",

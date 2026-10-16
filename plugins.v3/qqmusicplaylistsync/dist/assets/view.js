@@ -244,7 +244,7 @@ export function createPage(Vue) {
               badge(check.allowed ? '可选曲' : '已跳过', check.allowed ? 'green' : 'muted'),
               h('div', [h('strong', check.title), h('p', check.reason)]), h('time', time(check.at)),
             ])) : h('p', {class: 'qqm-muted'}, '暂无检查记录'))]),
-          h('footer', {class: 'qqm-footer'}, [h('span', '音乐歌单同步'), h('span', 'v1.7.2')]),
+          h('footer', {class: 'qqm-footer'}, [h('span', '音乐歌单同步'), h('span', 'v1.8.0')]),
         ],
       ]);
     },
@@ -257,7 +257,7 @@ export function createConfig(Vue) {
   return defineComponent({
     name: 'QQMusicConfig', props: {initialConfig: Object}, emits: ['save', 'close', 'switch', 'layout'],
     setup(props, {emit}) {
-      const config = reactive({enabled: false, dry_run: true, playlist_urls: '', netease_playlist_urls: '', interval: 1, subscribe_workers: 4,
+      const config = reactive({enabled: false, dry_run: true, playlist_urls: '', netease_playlist_urls: '', interval: 60, subscribe_workers: 4,
         immediate_search: true, downloader: '', save_path: '', library_path: '', ...props.initialConfig});
       const error = ref('');
       onMounted(() => emit('layout', {maxWidth: '800px'}));
@@ -292,7 +292,8 @@ export function createConfig(Vue) {
           field('downloader', '下载器', {placeholder: '跟随 MP 默认下载器'}),
           field('save_path', '下载目录', {placeholder: '跟随 MP 音乐下载目录'}),
           field('library_path', '音乐库目录', {placeholder: '跟随 MP 音乐库目录'}),
-          h('p', {class: 'qqm-rule'}, '分轨选曲需要 qBittorrent；歌曲整理继续使用 MP 的目录设置。')]),
+          h('p', {class: 'qqm-rule'}, '分轨选曲需要 qBittorrent；歌曲整理继续使用 MP 的目录设置。'),
+          h('p', {class: 'qqm-rule'}, '音乐目录每 10 分钟重新核对，下载进度每 15 秒更新。过期历史每天清理，保留 90 天；使用中的订阅和选曲保护记录继续保留。')]),
         error.value && h('p', {class: 'qqm-error-text', role: 'alert'}, error.value),
         h('div', {class: 'qqm-config-actions'}, [button('取消', () => emit('close')), button('保存设置', save, {primary: true, icon: 'check'})]),
       ]);
