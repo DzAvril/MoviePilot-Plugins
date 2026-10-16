@@ -63,7 +63,13 @@ def song_lifecycle(state, registry, tasks, transfers, *, library_files=None, fil
     states = {}
     for mid, item in tracks.items():
         if mid in confirmed:
-            states[mid] = _state("library", "已入库", "已确认音乐库中的歌曲文件", tone="green")
+            mode = {"link": "硬链接", "copy": "复制"}.get(item.get("cache_transfer_type"), "原生整理")
+            message = f"已复用下载缓存，按 MP {mode}入库" if item.get("cache_source") else "已确认音乐库中的歌曲文件"
+            states[mid] = _state("library", "已入库", message, tone="green")
+        elif item.get("cache_pending"):
+            failed = bool(item.get("cache_import_error"))
+            states[mid] = _state("transfer_failed" if failed else "downloaded", "整理失败" if failed else "待入库",
+                item.get("cache_import_error") or "已找到完整下载缓存，等待 MP 整理入库", 1, "warn" if failed else "purple")
         elif item.get("status") == "pending":
             states[mid] = _state("pending", "待订阅", "等待创建 MP 单曲订阅")
         elif item.get("status") == "failed":
@@ -85,6 +91,8 @@ def song_lifecycle(state, registry, tasks, transfers, *, library_files=None, fil
             if transfer and transfer.get("status") is True and file_exists(transfer.get("dest"), transfer.get("dest_storage")):
                 confirmed[mid] = {"path": transfer["dest"], "storage": transfer.get("dest_storage") or "local"}
                 candidate = _state("library", "已入库", "MP 已成功整理，已确认入库文件", tone="green")
+            elif tracks[mid].get("cache_pending") and tracks[mid].get("cache_import_error"):
+                candidate = states[mid]
             elif transfer and transfer.get("status") is False and (not task.get("success") or task.get("state") == "missing"):
                 candidate = _state("transfer_failed", "整理失败", "MP 整理未成功，请查看整理记录", tone="warn")
             elif not task.get("success"):

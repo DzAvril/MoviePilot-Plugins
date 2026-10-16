@@ -16,10 +16,12 @@ from mutagen import File as AudioFile, MutagenError
 
 from app.chain.subscribe import SubscribeChain
 from app.chain.download import DownloadChain
+from app.chain.transfer import TransferChain
+from app.schemas import FileItem
 from app.schemas.types import ChainEventType, MediaSource, MediaType
 from app.sdk.events import eventmanager
 from app.sdk.logging import logger
-from app.sdk.media import MusicInfo
+from app.sdk.media import MetaMusic, MusicInfo
 from app.sdk.network import RequestUtils, SecurityUtils
 from app.sdk.plugin import _PluginBase
 from app.sdk.queries import list_subscriptions, list_subscription_history, list_transfer_history
@@ -34,6 +36,7 @@ from .lifecycle import song_lifecycle
 from .library import LibraryIndexCache
 from .history import RETENTION_DAYS, cleanup_due, expired, local_source_absent, retired_download, prune_history
 from .seeding import maintain_entry, retention_days
+from .cache import cache_candidates, source_path, cached_destination, completed_cached_file, cache_source_exists, allow_cached_track
 
 
 class QQMusicPlaylistSync(_PluginBase):
@@ -41,7 +44,7 @@ class QQMusicPlaylistSync(_PluginBase):
     plugin_name = "音乐歌单同步"
     plugin_desc = "持续同步 QQ 与网易云歌单，整专下载做种、仅歌单歌曲入库，支持到期清理未入库歌曲。"
     plugin_icon = "https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/main/icons/MusicPlaylistSync-1.7.1.png"
-    plugin_version = "1.9.1"
+    plugin_version = "1.10.0"
     plugin_author = "DzAvril"
     author_url = "https://github.com/DzAvril"
     plugin_config_prefix = "qqmusicplaylistsync_"
@@ -390,6 +393,13 @@ class QQMusicPlaylistSync(_PluginBase):
         item = self._state.get("tracks", {}).get(track_key(self._state, media.media_source, media.media_id))
         if not item or data.cancel:
             return event
+        if item.get("cache_pending") and cache_source_exists(item):
+            data.cancel, data.source, data.reason = True, self.plugin_name, "歌曲已有完整下载缓存，等待原生整理，不重复下载"
+            return event
+        if item.get("cache_source") and item.get("status") == "library":
+            if self._status_file_exists(item.get("library_path"), "local", self._resolved_settings()):
+                data.cancel, data.source, data.reason = True, self.plugin_name, "歌曲已从下载缓存入库，不重复下载"
+                return event
         # 同步开关暂停后，已生成的原生订阅仍必须遵守单曲边界。
         torrent = context.torrent_info
         reason = "无法确认种子文件内容，保留单曲订阅等待可验证资源"
@@ -634,6 +644,123 @@ class QQMusicPlaylistSync(_PluginBase):
             audio_quality="hires|lossless", best_version=0,
         )
 
+    def _cache_directory(self, media, path):
+        """逐次按实际源路径匹配 MP 目录，继承当前整理方式和命名、刮削规则。"""
+        from app.application.directory import DirectoryHelper
+        directory = DirectoryHelper().get_download_dir_by_task_path(media=media, task_path=str(path))
+        if (not directory or directory.transfer_type not in ("link", "copy") or not directory.library_path
+                or (directory.library_storage or "local") != "local"):
+            raise SelectionError("缓存入库需要匹配到本地音乐目录，且整理方式为硬链接或复制")
+        download_root, library_root = Path(directory.download_path).resolve(), Path(directory.library_path)
+        if (not library_root.is_absolute() or download_root.is_relative_to(library_root.resolve())
+                or library_root.resolve().is_relative_to(download_root)):
+            raise SelectionError("音乐下载目录与入库目录重叠，缓存文件已保留")
+        return directory
+
+    def _finish_cache_subscription(self, item, media, existing):
+        """仅完成本插件对应的普通单曲订阅；洗版和其它媒体订阅保持原规则。"""
+        sid = item.get("subscription_id") or existing.get(item["song"]["mid"])
+        if not sid:
+            return
+        try:
+            chain = SubscribeChain()
+            native = chain.subscription_repository.get(sid)
+            if (native and not native.best_version and native.music_type == "recording"
+                    and str(native.media_source) == str(media.media_source) and str(native.media_id) == str(media.media_id)):
+                chain.finish_subscribe_or_not(subscribe=native, meta=MetaMusic(title=media.title, artists=media.artists),
+                                              mediainfo=media, force=True)
+            item.pop("cache_completion_error", None)
+        except Exception:
+            item["cache_completion_error"] = "歌曲已入库，订阅完成状态将在下次同步时重试"
+
+    def _reuse_cached(self, library, existing):
+        """歌单快照合并后、创建/搜索订阅前复用缓存；不调用下载器写接口。"""
+        imported, failed, attempted = 0, 0, set()
+        for item in self._state.get("tracks", {}).values():
+            if item.get("cache_pending") and not cache_source_exists(item):
+                item.update(cache_pending=False, search_pending=True)
+                item.pop("cache_import_error", None)
+        with self._selection_lock:
+            registry = self.get_data("selected_downloads") or {}
+            for key, matches in cache_candidates(self._state, registry).items():
+                if self._stop.is_set():
+                    break
+                entry = registry[key]
+                entry["hash"] = key
+                transfers, row, rows, service = None, None, None, None
+                for mid, filename in matches.items():
+                    if mid in attempted or self._stop.is_set():
+                        continue
+                    item = self._state["tracks"][mid]
+                    song = item["song"]
+                    if any(library.get((text_key(song["title"]), text_key(artist))) for artist in song["artists"]):
+                        continue
+                    try:
+                        media = self.recognize_media(media_source=song.get("source", self.SOURCE),
+                            media_id=song.get("source_id", mid), music_type="recording")
+                        if not media:
+                            continue
+                        path = source_path(entry, filename)
+                        directory = self._cache_directory(media, path)
+                        settings = {"library_path": directory.library_path, "library_storage": directory.library_storage}
+                        if item.get("status") == "library" and self._status_file_exists(item.get("library_path"), "local", settings):
+                            if item.get("cache_source"):
+                                self._finish_cache_subscription(item, media, existing)
+                            continue
+                        if transfers is None:
+                            transfers = self._status_transfer_rows({"media_types": [MediaType.MUSIC], "download_hash": key})
+                        dest = cached_destination(entry, filename, transfers, settings)
+                        if dest:
+                            allow_cached_track(entry, mid, filename)
+                            self.save_data("selected_downloads", registry)
+                        if not dest:
+                            if service is None:
+                                service = self._qb_service(entry["downloader"])
+                                row = task_info(service.instance, key)
+                                rows = service.instance.get_files(key) if row else []
+                            if not row:
+                                continue
+                            path = completed_cached_file(entry, filename, row, rows,
+                                lambda p: str(service.module.normalize_path(Path(p), entry["downloader"])))
+                            attempted.add(mid)
+                            allow_cached_track(entry, mid, filename)
+                            self.save_data("selected_downloads", registry)
+                            info = path.stat()
+                            item.update(cache_source=str(path), cache_signature=[info.st_size, info.st_mtime_ns],
+                                        cache_pending=True, search_pending=False, cache_transfer_type=directory.transfer_type)
+                            self._save(self._state)
+                            # 单文件、原生目录对象、同步完成；不整理目录或附带其它音轨。
+                            success, _ = TransferChain().do_transfer(
+                                fileitem=FileItem(storage="local", type="file", path=str(path), name=path.name,
+                                    basename=path.stem, extension=path.suffix.lstrip("."), size=info.st_size),
+                                mediainfo=media, mtype=MediaType.MUSIC, media_source=media.media_source, media_id=media.media_id,
+                                target_directory=directory, transfer_type=directory.transfer_type,
+                                downloader=entry["downloader"], download_hash=key, background=False, manual=True,
+                                sync_extra_files=False, continue_callback=lambda: not self._stop.is_set())
+                            transfers = self._status_transfer_rows({"media_types": [MediaType.MUSIC], "download_hash": key})
+                            dest = cached_destination(entry, filename, transfers, settings)
+                            if not success or not dest or not cache_source_exists(item):
+                                raise SelectionError("缓存整理尚未成功，保留源文件，下次同步重试")
+                            imported += 1
+                            item["cache_imported_at"] = time.time()
+                        item.update(status="library", library_path=dest, cache_pending=False, search_pending=False, error="")
+                        item.pop("cache_import_error", None)
+                        self._finish_cache_subscription(item, media, existing)
+                        self._save(self._state)
+                        for artist in song["artists"]:
+                            library[(text_key(song["title"]), text_key(artist))] = dest
+                    except SelectionError as error:
+                        if item.get("cache_pending"):
+                            item["cache_import_error"] = str(error)
+                            failed += 1
+                    except Exception:
+                        if item.get("cache_pending"):
+                            item["cache_import_error"] = "缓存入库暂未完成，保留源文件，下次同步重试"
+                            failed += 1
+        self._state["last_cache_reuse"] = {"at": time.time(), "imported": imported, "failed": failed}
+        self._save(self._state)
+        return imported
+
     def _queue_search(self):
         """等同手动搜索：只提交歌单订阅，立即提升已有新订阅任务，不重复创建任务。"""
         chain = SubscribeChain()
@@ -641,6 +768,8 @@ class QQMusicPlaylistSync(_PluginBase):
         items = []
         for item in self._state["tracks"].values():
             if not item.get("present") or item["status"] != "subscribed":
+                continue
+            if item.get("cache_pending"):
                 continue
             if not item.get("search_pending", not item.get("search_requested_at")):
                 continue
@@ -718,6 +847,7 @@ class QQMusicPlaylistSync(_PluginBase):
                                      and item.get("retry_at", 0) <= now for item in self._state["tracks"].values())
                 existing = self._existing() if needs_creation else {}
                 library = self._library_index()
+                cache_imported = self._reuse_cached(library, existing)
                 indexed = time.perf_counter()
 
                 def in_library(song):
@@ -742,11 +872,12 @@ class QQMusicPlaylistSync(_PluginBase):
                     "subscribe_seconds": round(subscribed - indexed, 3),
                     "total_seconds": round(time.perf_counter() - started, 3),
                     "created": created, "search_queued": search_queued,
+                    "cache_imported": cache_imported,
                 }
                 self._state["last_sync"] = time.time()
                 self._save(self._state)
                 logger.info(f"音乐歌单同步完成：{len(snapshots)}/{len(pids)} 个歌单成功，去重 {summary(self._state)['tracked']} 首，新增订阅 {created}，待处理 {summary(self._state)['pending']}")
-                return {"success": True, "created": created, "search_queued": search_queued, "partial_success": bool(playlist_errors),
+                return {"success": True, "created": created, "cache_imported": cache_imported, "search_queued": search_queued, "partial_success": bool(playlist_errors),
                         "metrics": self._state["last_metrics"], **summary(self._state)}
             except Exception as error:
                 # 不记录响应体、Cookie 或认证数据；出错也保留已提交成功的账本。
@@ -771,6 +902,7 @@ class QQMusicPlaylistSync(_PluginBase):
                                 "last_cleanup": state.get("last_cleanup", {})},
                 "immediate_search": self._config["immediate_search"], "metrics": state.get("last_metrics", {}),
                 "download_mode": "full_album", "unselected_cleanup_days": self._config["unselected_cleanup_days"],
+                "last_cache_reuse": state.get("last_cache_reuse", {}),
                 "last_search": state.get("last_search", {}), "single_track_only": True,
                 "split_album_selection": True, "skip_cue": True, "adapter_error": self._adapter_error,
                 "selected_downloads": list((self.get_data("selected_downloads") or {}).values())[-10:],

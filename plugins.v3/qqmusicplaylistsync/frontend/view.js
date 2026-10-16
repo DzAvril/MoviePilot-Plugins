@@ -151,7 +151,7 @@ export function createPage(Vue) {
         notice.value = '';
         try {
           const response = unwrap(await props.api.post(endpoint('page_sync')));
-          notice.value = response?.success ? `同步完成，新增 ${response.created || 0} 个订阅。` :
+          notice.value = response?.success ? `同步完成，新增 ${response.created || 0} 个订阅，从下载缓存入库 ${response.cache_imported || 0} 首。` :
             response?.message || response?.last_error || '本轮同步未完成，请查看同步状态。';
           await load();
         } catch {notice.value = '同步请求未完成，请稍后刷新查看结果。';}
@@ -239,7 +239,10 @@ export function createPage(Vue) {
             h('div', {class: 'qqm-setting-row'}, [h('span', label), h('code', data.value.settings[key] || '未配置'),
               badge(data.value.settings.follow_mp?.[key] ? '跟随 MP' : '插件配置')])),
           data.value.settings.error && h('p', {class: 'qqm-error-text'}, data.value.settings.error),
+          h('div', {class: 'qqm-setting-row'}, [h('span', '缓存入库方式'),
+            h('code', ({link:'硬链接',copy:'复制'})[data.value.settings.transfer_type] || '请使用硬链接或复制'), badge('跟随 MP')]),
           h('p', {class: 'qqm-rule'}, '保持单曲订阅 · 整专下载做种 · 仅歌单歌曲入库 · CUE 整轨跳过'),
+          h('p', {class: 'qqm-rule'}, '优先检查已登记的下载缓存，音轨完整时直接交给 MP 单文件入库，不重复下载。'),
           h('p', {class: 'qqm-rule'}, data.value.unselected_cleanup_days ? `未入库歌曲保留 ${data.value.unselected_cleanup_days} 天，满足条件后清理` : '未入库歌曲保留：不自动清理'),
         ])]);
       return () => h('main', {class: 'qqm-root'}, [header(),
@@ -281,7 +284,7 @@ export function createPage(Vue) {
               badge(check.allowed ? '可选曲' : '已跳过', check.allowed ? 'green' : 'muted'),
               h('div', [h('strong', check.title), h('p', check.reason)]), h('time', time(check.at)),
             ])) : h('p', {class: 'qqm-muted'}, '暂无检查记录'))]),
-          h('footer', {class: 'qqm-footer'}, [h('span', '音乐歌单同步'), h('span', 'v1.9.1')]),
+          h('footer', {class: 'qqm-footer'}, [h('span', '音乐歌单同步'), h('span', 'v1.10.0')]),
         ],
       ]);
     },
@@ -334,6 +337,7 @@ export function createConfig(Vue) {
           field('save_path', '下载目录', {placeholder: '跟随 MP 音乐下载目录'}),
           field('library_path', '音乐库目录', {placeholder: '跟随 MP 音乐库目录'}),
           h('p', {class: 'qqm-rule'}, '需要 qBittorrent；整张分轨专辑下载做种，仅歌单歌曲入库。MP 音乐目录需使用硬链接或复制整理。'),
+          h('p', {class: 'qqm-rule'}, '新歌曲命中完整下载缓存时，直接使用源目录当前的硬链接或复制规则入库，保留做种原件；未完整的音轨继续等待或搜索。'),
           h('p', {class: 'qqm-rule'}, '音乐目录每 10 分钟重新核对，下载进度每 15 秒更新。过期历史每天清理，保留 90 天；使用中的订阅和选曲保护记录继续保留。')]),
         h('section', {class: 'qqm-panel qqm-config-section'}, [title('做种与空间清理', '默认保留完整专辑，可按 PT 站点做种要求设置清理期限。'),
           field('unselected_cleanup_days', '未入库歌曲保留天数', {type: 'number', min: 0, max: 3650}),

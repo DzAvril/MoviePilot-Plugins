@@ -450,7 +450,7 @@ def process_pending(state, *, now, limit, existing, in_library, subscribe, save,
         for mid, item in ordered:
             if stopped() or (limit and attempted >= limit):
                 break
-            if not item.get("present") or item["status"] in ("library", "subscribed"):
+            if not item.get("present") or item["status"] in ("library", "subscribed") or item.get("cache_pending"):
                 continue
             if item.get("retry_at", 0) > now:
                 continue

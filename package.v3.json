@@ -2,12 +2,13 @@
   "QQMusicPlaylistSync": {
     "name": "音乐歌单同步",
     "description": "持续同步 QQ 与网易云歌单，整专下载做种、仅歌单歌曲入库，支持到期清理未入库歌曲。",
-    "version": "1.9.1",
+    "version": "1.10.0",
     "author": "DzAvril",
     "level": 1,
     "system_version": ">=3.1.6,<4",
     "icon": "https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/main/icons/MusicPlaylistSync-1.7.1.png",
     "history": {
+      "v1.10.0": "新增歌曲优先复用已登记的完整下载缓存，按源路径对应的 MP 硬链接或复制规则单文件入库；成功后完成原生单曲订阅，整理失败保留缓存重试并阻止重复下载。",
       "v1.9.1": "修复旧选曲任务补全整专时的原生路径映射参数类型，兼容 MP 3.1.6 的 Path 契约。",
       "v1.9.0": "拆分整专下载与歌单入库清单，保留完整种子做种；可设置未入库歌曲保留天数，默认不清理，确认入库与累计做种时长后移除任务并清理未入库音频。",
       "v1.8.2": "通过 MP SDK 为歌单封面生成原生图片授权地址，兼容图片域名校验；国内音乐封面使用直连图片缓存。",
