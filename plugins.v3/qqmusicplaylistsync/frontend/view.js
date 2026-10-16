@@ -284,7 +284,7 @@ export function createPage(Vue) {
               badge(check.allowed ? '可选曲' : '已跳过', check.allowed ? 'green' : 'muted'),
               h('div', [h('strong', check.title), h('p', check.reason)]), h('time', time(check.at)),
             ])) : h('p', {class: 'qqm-muted'}, '暂无检查记录'))]),
-          h('footer', {class: 'qqm-footer'}, [h('span', '音乐歌单同步'), h('span', 'v1.10.0')]),
+          h('footer', {class: 'qqm-footer'}, [h('span', '音乐歌单同步'), h('span', 'v1.10.1')]),
         ],
       ]);
     },

@@ -40,7 +40,7 @@ def setup(tmp_path,monkeypatch):
     rows=[dict(id=1,download_hash='a'*40,src=str(root/FILES[0]),dest=str(library/FILES[0]),status=True,dest_storage='local')]
     qb=SeedQB(download)
     directory=SimpleNamespace(download_path=str(download),library_path=str(library),library_storage='local',transfer_type='link')
-    current={'directory':directory,'success':True,'record':True}
+    current={'directory':directory,'success':True,'record':True,'history_queries':[]}
     calls,finished=[],[]
     native=SimpleNamespace(best_version=0,music_type='recording',media_source='qqmusic',media_id='two')
     current['native']=native
@@ -61,6 +61,9 @@ def setup(tmp_path,monkeypatch):
         return True,''
     module=SimpleNamespace(DirectoryHelper=lambda:SimpleNamespace(get_download_dir_by_task_path=lambda **kwargs:current['directory']))
     monkeypatch.setitem(sys.modules,'app.application.directory',module)
+    def history(filters):
+        current['history_queries'].append(filters)
+        return [row for row in rows if all(row.get(key)==value for key,value in filters.items() if key in ('download_hash','src'))]
     names={'_cache_directory','_reuse_cached','_finish_cache_subscription','guard_single_track','_owns_media'}
     ns=plugin_methods(names,dict(Path=Path,time=time,SelectionError=seeding.SelectionError,cache_candidates=cache.cache_candidates,
         source_path=cache.source_path,cached_destination=cache.cached_destination,completed_cached_file=cache.completed_cached_file,
@@ -72,7 +75,7 @@ def setup(tmp_path,monkeypatch):
         get_data=lambda key:deepcopy(data.get(key)),save_data=lambda k,v:data.update({k:deepcopy(v)}),
         _save=lambda value:data.update(state=deepcopy(value)),
         recognize_media=lambda **kwargs:SimpleNamespace(title='山川',artists=['李荣浩'],**kwargs),
-        _status_transfer_rows=lambda filters:list(rows),
+        _status_transfer_rows=history,
         _qb_service=lambda _:SimpleNamespace(instance=qb,module=SimpleNamespace(normalize_path=lambda path,name:path.as_posix())),
         _resolved_settings=lambda:{'library_path':str(library),'library_storage':'local'},
         _status_file_exists=lambda path,*args:bool(path) and Path(path).is_file())
@@ -149,6 +152,38 @@ def test_native_acceptance_without_successful_record_is_not_reported_as_imported
     assert plugin._reuse_cached({}, {})==0
     assert plugin._state['tracks']['two']['cache_pending'] and not finished
     assert plugin._state['tracks']['two']['status']=='pending'
+
+
+def test_shared_source_history_from_other_torrent_is_confirmed_without_reimport(setup):
+    plugin,data,_,current,calls,finished,root,library,rows=setup
+    source=root/FILES[2];dest=library/FILES[2]
+    os.link(source,dest)
+    rows.append(dict(id=2,download_hash='b'*40,src=str(source),src_storage='local',
+        dest=str(dest),dest_storage='local',status=True))
+    item=plugin._state['tracks']['two']
+    info=source.stat()
+    item.update(cache_pending=True,cache_import_error='old failure',cache_source=str(source),
+        cache_signature=[info.st_size,info.st_mtime_ns])
+    assert plugin._reuse_cached({(core.text_key('山川'),core.text_key('李荣浩')):str(dest)}, {})==0
+    assert not calls and finished
+    assert item['status']=='library' and item['library_path']==str(dest)
+    assert not item['cache_pending'] and not item.get('cache_import_error')
+    assert plugin._state['last_cache_reuse']['failed']==0
+    assert any(query.get('src')==str(source) for query in current['history_queries'])
+    assert data['selected_downloads']['a'*40]['matches']['two']==FILES[2]
+
+
+@pytest.mark.parametrize('change',['missing','outside','remote','failed'])
+def test_shared_source_history_still_requires_safe_successful_library_file(setup,change):
+    _,_,_,_,_,_,root,library,rows=setup
+    source=root/FILES[2];dest=library/FILES[2]
+    if change!='missing':os.link(source,dest)
+    row=dict(id=2,download_hash='b'*40,src=str(source),dest=str(dest),dest_storage='local',status=True)
+    if change=='outside':row['dest']=str(source)
+    elif change=='remote':row['src_storage']='remote'
+    elif change=='failed':row['status']=False
+    entry=setup[1]['selected_downloads']['a'*40]
+    assert cache.cached_destination(entry,FILES[2],[row],{'library_path':str(library)}) is None
 
 
 def test_removing_new_song_from_playlist_does_not_import_cached_track(setup):

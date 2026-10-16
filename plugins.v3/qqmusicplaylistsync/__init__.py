@@ -44,7 +44,7 @@ class QQMusicPlaylistSync(_PluginBase):
     plugin_name = "音乐歌单同步"
     plugin_desc = "持续同步 QQ 与网易云歌单，整专下载做种、仅歌单歌曲入库，支持到期清理未入库歌曲。"
     plugin_icon = "https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/main/icons/MusicPlaylistSync-1.7.1.png"
-    plugin_version = "1.10.0"
+    plugin_version = "1.10.1"
     plugin_author = "DzAvril"
     author_url = "https://github.com/DzAvril"
     plugin_config_prefix = "qqmusicplaylistsync_"
@@ -693,7 +693,8 @@ class QQMusicPlaylistSync(_PluginBase):
                         continue
                     item = self._state["tracks"][mid]
                     song = item["song"]
-                    if any(library.get((text_key(song["title"]), text_key(artist))) for artist in song["artists"]):
+                    if (not item.get("cache_pending") and
+                            any(library.get((text_key(song["title"]), text_key(artist))) for artist in song["artists"])):
                         continue
                     try:
                         media = self.recognize_media(media_source=song.get("source", self.SOURCE),
@@ -704,12 +705,18 @@ class QQMusicPlaylistSync(_PluginBase):
                         directory = self._cache_directory(media, path)
                         settings = {"library_path": directory.library_path, "library_storage": directory.library_storage}
                         if item.get("status") == "library" and self._status_file_exists(item.get("library_path"), "local", settings):
+                            item.update(cache_pending=False, search_pending=False)
+                            item.pop("cache_import_error", None)
                             if item.get("cache_source"):
                                 self._finish_cache_subscription(item, media, existing)
                             continue
                         if transfers is None:
                             transfers = self._status_transfer_rows({"media_types": [MediaType.MUSIC], "download_hash": key})
                         dest = cached_destination(entry, filename, transfers, settings)
+                        if not dest:
+                            # 原生历史可能绑定另一个共用此源文件的种子；精确查源路径，仍核验真实目标文件。
+                            transfers.extend(self._status_transfer_rows({"media_types": [MediaType.MUSIC], "src": str(path)}))
+                            dest = cached_destination(entry, filename, transfers, settings)
                         if dest:
                             allow_cached_track(entry, mid, filename)
                             self.save_data("selected_downloads", registry)
@@ -957,7 +964,7 @@ class QQMusicPlaylistSync(_PluginBase):
         while True:
             result = list_transfer_history(filters, {"page": page, "count": 200})
             rows.extend({key: getattr(item, key, None) for key in
-                         ("id", "src", "dest", "dest_storage", "status", "download_hash",
+                         ("id", "src", "src_storage", "dest", "dest_storage", "status", "download_hash",
                           "media_source", "media_id", "music_type", "title")} for item in result.items)
             if not result.has_next:
                 return rows

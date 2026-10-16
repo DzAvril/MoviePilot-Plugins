@@ -31,12 +31,14 @@ def source_path(entry, filename):
 
 def cached_destination(entry, filename, transfers, settings):
     source = str(source_path(entry, filename))
-    check = {**entry, "fullpaths": [source]}
-    if not library_confirmed(check, transfers, settings):
+    # 同一文件可能由辅种任务共用；原生整理记录按源文件去重，hash 不一定属于本次任务。
+    rows = [row for row in transfers if row.get("src") == source
+            and (row.get("src_storage") or "local") == "local"]
+    if not rows:
         return None
-    rows = [row for row in transfers if str(row.get("download_hash") or "").lower() == entry["hash"].lower()
-            and row.get("src") == source]
-    return max(rows, key=lambda row: row.get("id", 0))["dest"]
+    latest = max(rows, key=lambda row: row.get("id", 0))
+    check = {**entry, "hash": str(latest.get("download_hash") or ""), "fullpaths": [source]}
+    return latest["dest"] if library_confirmed(check, [latest], settings) else None
 
 
 def completed_cached_file(entry, filename, row, rows, normalize):
