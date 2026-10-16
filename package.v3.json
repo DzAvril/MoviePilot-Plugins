@@ -2,12 +2,13 @@
   "QQMusicPlaylistSync": {
     "name": "音乐歌单同步",
     "description": "持续同步 QQ 与网易云歌单，保持单曲订阅，从分轨专辑只下载歌单歌曲，跳过 CUE。",
-    "version": "1.7.1",
+    "version": "1.7.2",
     "author": "DzAvril",
     "level": 1,
     "system_version": ">=3.1.6,<4",
     "icon": "https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/main/icons/MusicPlaylistSync-1.7.1.png",
     "history": {
+      "v1.7.2": "修复数据页及设置页图标加载，统一使用 MP 原生图片缓存入口。",
       "v1.7.1": "新增音符与循环同步图标，插件列表、歌单数据页和设置页统一图标，页面图标随插件打包。",
       "v1.7.0": "支持网易云公开歌单完整读取及持续同步；与 QQ 歌单确认同一录音后去重，沿用单曲选曲下载及入库状态。",
       "v1.6.0": "歌曲状态联动逐音轨下载进度及 MP 整理结果，区分待搜索、下载中、待入库和已入库，每15秒自动更新。",

@@ -1,3 +1,6 @@
+// Use the same authenticated image-cache endpoint as MoviePilot plugin cards.
+const PLUGIN_ICON = `/api/v1/system/img/1?imgurl=${encodeURIComponent('https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/main/icons/MusicPlaylistSync-1.7.1.png')}&cache=true`;
+
 const STATUSES = {searching: '待搜索', downloading: '下载中', downloaded: '待入库', library: '已入库',
   pending: '待订阅', failed: '等待重试', transfer_failed: '整理失败', unknown: '状态待确认'};
 const PATHS = {
@@ -134,7 +137,7 @@ export function createPage(Vue) {
       });
       onBeforeUnmount(() => {disposed = true; clearInterval(refreshTimer);});
       const header = () => h('header', {class: 'qqm-header'}, [
-        h('div', {class: 'qqm-brand'}, [h('img', {class: 'qqm-logo qqm-logo-image', src: '/api/v1/plugin/file/QQMusicPlaylistSync/dist/assets/MusicPlaylistSync-1.7.1.png', alt: '音乐歌单同步图标', width: 54, height: 54}),
+        h('div', {class: 'qqm-brand'}, [h('img', {class: 'qqm-logo qqm-logo-image', src: PLUGIN_ICON, alt: '音乐歌单同步图标', width: 54, height: 54}),
           h('div', [h('div', {class: 'qqm-eyebrow'}, 'MUSIC · PLAYLIST SYNC'), h('h2', '歌单同步'),
             h('p', '从喜欢的歌单，到自己的音乐库')])]),
         h('div', {class: 'qqm-actions'}, [button(loading.value ? '刷新中' : '刷新', load,
@@ -241,7 +244,7 @@ export function createPage(Vue) {
               badge(check.allowed ? '可选曲' : '已跳过', check.allowed ? 'green' : 'muted'),
               h('div', [h('strong', check.title), h('p', check.reason)]), h('time', time(check.at)),
             ])) : h('p', {class: 'qqm-muted'}, '暂无检查记录'))]),
-          h('footer', {class: 'qqm-footer'}, [h('span', '音乐歌单同步'), h('span', 'v1.7.1')]),
+          h('footer', {class: 'qqm-footer'}, [h('span', '音乐歌单同步'), h('span', 'v1.7.2')]),
         ],
       ]);
     },
@@ -270,7 +273,7 @@ export function createConfig(Vue) {
         emit('save', {...config, interval, subscribe_workers: workers});
       };
       return () => h('form', {class: 'qqm-root qqm-config', onSubmit: e => {e.preventDefault(); save();}}, [
-        h('header', {class: 'qqm-header'}, [h('div', {class: 'qqm-brand'}, [h('img', {class: 'qqm-logo qqm-logo-image', src: '/api/v1/plugin/file/QQMusicPlaylistSync/dist/assets/MusicPlaylistSync-1.7.1.png', alt: '音乐歌单同步图标', width: 54, height: 54}),
+        h('header', {class: 'qqm-header'}, [h('div', {class: 'qqm-brand'}, [h('img', {class: 'qqm-logo qqm-logo-image', src: PLUGIN_ICON, alt: '音乐歌单同步图标', width: 54, height: 54}),
           h('div', [h('div', {class: 'qqm-eyebrow'}, 'MUSIC · SETTINGS'), h('h2', '歌单同步设置'), h('p', '把 QQ 与网易云歌单持续收进音乐库')])])]),
         h('section', {class: 'qqm-panel qqm-config-section'}, [toggle('enabled', '启用持续同步', '按设定间隔检查所有歌单'),
           toggle('dry_run', '只预览歌单', '开启后读取歌单，不创建新订阅')]),

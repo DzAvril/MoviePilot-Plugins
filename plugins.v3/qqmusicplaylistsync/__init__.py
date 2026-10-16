@@ -38,7 +38,7 @@ class QQMusicPlaylistSync(_PluginBase):
     plugin_name = "音乐歌单同步"
     plugin_desc = "持续同步 QQ 与网易云歌单，保持单曲订阅，从分轨专辑只下载歌单歌曲，跳过 CUE。"
     plugin_icon = "https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/main/icons/MusicPlaylistSync-1.7.1.png"
-    plugin_version = "1.7.1"
+    plugin_version = "1.7.2"
     plugin_author = "DzAvril"
     author_url = "https://github.com/DzAvril"
     plugin_config_prefix = "qqmusicplaylistsync_"
