@@ -259,9 +259,9 @@ def test_real_plugin_maintenance_preserves_registry_and_defers_new_playlist_song
         get_state=lambda:True,get_data_path=lambda:tmp_path/'plugin-data',get_data=lambda key:deepcopy(data.get(key)),
         save_data=lambda key,value:data.update({key:deepcopy(value)}),
         _resolved_settings=lambda:{**options['settings'],'transfer_type':'link'},
-        _qb_service=lambda _:SimpleNamespace(instance=qb,module=SimpleNamespace(normalize_path=lambda p,n:p)),
+        _qb_service=lambda _:SimpleNamespace(instance=qb,module=SimpleNamespace(normalize_path=lambda p,n:p.as_posix())),
         _status_transfer_rows=lambda filters:transfers)
-    method=plugin_methods({'maintain_downloads'},dict(fcntl=fcntl,deepcopy=deepcopy,time=time,
+    method=plugin_methods({'maintain_downloads'},dict(fcntl=fcntl,deepcopy=deepcopy,time=time,Path=Path,
         maintain_entry=seeding.maintain_entry,SelectionError=selected.SelectionError,
         track_file_selection=core.track_file_selection,MediaType=SimpleNamespace(MUSIC='music')))['maintain_downloads']
     assert method(plugin)==dict(success=True,upgraded=1,cleaned=0,deferred=0)

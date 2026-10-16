@@ -41,7 +41,7 @@ class QQMusicPlaylistSync(_PluginBase):
     plugin_name = "音乐歌单同步"
     plugin_desc = "持续同步 QQ 与网易云歌单，整专下载做种、仅歌单歌曲入库，支持到期清理未入库歌曲。"
     plugin_icon = "https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/main/icons/MusicPlaylistSync-1.7.1.png"
-    plugin_version = "1.9.0"
+    plugin_version = "1.9.1"
     plugin_author = "DzAvril"
     author_url = "https://github.com/DzAvril"
     plugin_config_prefix = "qqmusicplaylistsync_"
@@ -326,6 +326,8 @@ class QQMusicPlaylistSync(_PluginBase):
         files = server.get_files(torrent_hash) if row else []
         return {"success": True, **entry, "state": row.get("state") if row else "missing",
                 "progress": row.get("progress") if row else None,
+                "seeding_time": row.get("seeding_time") if row else None,
+                "added_on": row.get("added_on") if row else None,
                 "tags": row.get("tags") if row else None,
                 "file_priorities": [{k: file.get(k) for k in ("index", "id", "name", "priority", "progress", "size")}
                                     for file in files or []]}
@@ -906,7 +908,7 @@ class QQMusicPlaylistSync(_PluginBase):
                                 [item["song"] for item in state.get("tracks", {}).values() if item.get("present")])
                             pending = bool(set(plan.get("files", [])) - set(entry.get("files", [])))
                         maintain_entry(entry, service.instance,
-                            normalize=lambda path: str(service.module.normalize_path(path, entry["downloader"])),
+                            normalize=lambda path: str(service.module.normalize_path(Path(path), entry["downloader"])),
                             settings=settings, days=self._config["unselected_cleanup_days"], now=time.time(),
                             transfers=lambda: self._status_transfer_rows({"media_types": [MediaType.MUSIC], "download_hash": key}),
                             save=lambda: self.save_data("selected_downloads", registry),
