@@ -106,7 +106,7 @@ def test_real_status_refresh_walks_once_but_rechecks_deleted_files_and_native_tr
         'MutagenError': RuntimeError, 'text_key': core.text_key, 'song_lifecycle': lifecycle.song_lifecycle,
         'MediaType': SimpleNamespace(MUSIC='music'), 'MediaSource': str, 'MUSIC_SOURCES': ('qqmusic', 'netease'),
         'download_cards': lambda *a: [], 'time': SimpleNamespace(time=lambda: NOW)})
-    plugin = SimpleNamespace(_stop=Event(), _status_lock=Lock(), _status_library_files={},
+    plugin = SimpleNamespace(_stop=Event(), _status_lock=Lock(), _status_library_files={}, _downloader_status=lambda:{},
         _status_index=library.LibraryIndexCache(clock=lambda: clock[0]), AUDIO_EXTENSIONS={'.flac'},
         STATE_KEY='state', get_data=lambda key: state if key == 'state' else {},
         _resolved_settings=lambda: {'library_path': str(root), 'library_storage': 'local'},

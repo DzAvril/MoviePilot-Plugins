@@ -97,4 +97,4 @@ jobs:
           fi
           gh release create "$tag" "qqmusicplaylistsync_v${PLUGIN_VERSION}.zip" \
             --target "$COMMIT_SHA" --title "音乐歌单同步 ${PLUGIN_VERSION}" \
-            --notes '持续同步 QQ 与网易云公开歌单，整专下载做种、仅歌单歌曲入库；新增歌曲优先复用完整下载缓存，按 MP 硬链接或复制规则入库。支持可选到期清理未入库歌曲，默认关闭自动清理。'
+            --notes '持续同步 QQ 与网易云公开歌单，支持 qBittorrent 与 Transmission：整专下载做种、仅歌单歌曲入库；新增歌曲优先复用完整下载缓存，按 MP 硬链接或复制规则入库。包含下载器连接检查、提交失败提示及可选到期清理，默认关闭自动清理。'

@@ -122,12 +122,13 @@ def shared_content(server, entry):
             raise SelectionError("其他下载任务仍使用该目录，保留文件")
 
 
-def remove_unimported(entry, server, *, normalize, settings, transfers, save, audio_extensions, stopped=lambda: False):
+def remove_unimported(entry, server, *, normalize, settings, transfers, save, audio_extensions, stopped=lambda: False, check_other_clients=lambda: None):
     """A persisted removal intent permits retry after a crash between qB removal and unlink."""
     cleanup = entry["cleanup"]
     if not library_confirmed(entry, transfers(), settings):
         raise SelectionError("入库文件未全部确认，保留下载文件")
     shared_content(server, entry)
+    check_other_clients()
     # Recheck directory/symlink safety, but retain original inode signatures on retries.
     current = {item["name"]: item for item in deletion_plan(entry, settings, audio_extensions)}
     for item in cleanup["plan"]:
@@ -175,7 +176,7 @@ def remove_unimported(entry, server, *, normalize, settings, transfers, save, au
     save()
 
 
-def maintain_entry(entry, server, *, normalize, settings, days, now, transfers, save, audio_extensions, pending_selection=False, stopped=lambda: False):
+def maintain_entry(entry, server, *, normalize, settings, days, now, transfers, save, audio_extensions, pending_selection=False, stopped=lambda: False, check_other_clients=lambda: None):
     """Called by scheduled/manual maintenance, never by read-only page refreshes."""
     cleanup = entry.setdefault("cleanup", {})
     if stopped():
@@ -185,7 +186,7 @@ def maintain_entry(entry, server, *, normalize, settings, days, now, transfers, 
     row = task_info(server, entry["hash"])
     if cleanup.get("state") in {"removing", "removed"}:
         if days and not pending_selection:
-            remove_unimported(entry, server, normalize=normalize, settings=settings, transfers=transfers, save=save, audio_extensions=audio_extensions, stopped=stopped)
+            remove_unimported(entry, server, normalize=normalize, settings=settings, transfers=transfers, save=save, audio_extensions=audio_extensions, stopped=stopped, check_other_clients=check_other_clients)
         return
     if not row or entry.get("phase") != "started" or entry.get("error"):
         return
@@ -220,6 +221,8 @@ def maintain_entry(entry, server, *, normalize, settings, days, now, transfers, 
         cleanup.update(state="waiting_library")
     else:
         seconds = row.get("seeding_time")
+        if seconds is None and callable(getattr(server, "seeding_seconds", None)):
+            seconds = server.seeding_seconds(entry["hash"])
         if not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or seconds < 0:
             raise SelectionError("做种时长无法核验，保留文件")
         if not cleanup.get("ready_at") or seconds < cleanup.get("seed_seconds_at_ready", 0):
@@ -228,6 +231,7 @@ def maintain_entry(entry, server, *, normalize, settings, days, now, transfers, 
                        seed_seconds=max(0, seconds - cleanup["seed_seconds_at_ready"]))
         if now >= cleanup["due_at"] and cleanup["seed_seconds"] >= days * DAY:
             shared_content(server, entry)
+            check_other_clients()
             plan = deletion_plan(entry, settings, audio_extensions)
             if not plan:
                 cleanup.update(state="not_needed")
@@ -241,5 +245,5 @@ def maintain_entry(entry, server, *, normalize, settings, days, now, transfers, 
                     raise SelectionError("下载任务创建时间无法核验，保留文件")
                 cleanup.update(state="removing", plan=plan, task_added_on=paused["added_on"])
                 save()
-                remove_unimported(entry, server, normalize=normalize, settings=settings, transfers=transfers, save=save, audio_extensions=audio_extensions, stopped=stopped)
+                remove_unimported(entry, server, normalize=normalize, settings=settings, transfers=transfers, save=save, audio_extensions=audio_extensions, stopped=stopped, check_other_clients=check_other_clients)
     save()

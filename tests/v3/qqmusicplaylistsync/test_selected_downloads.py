@@ -5,7 +5,7 @@ import time
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
-from threading import Event, RLock
+from threading import Event, Lock, RLock
 from types import MethodType, ModuleType, SimpleNamespace
 
 import pytest
@@ -162,7 +162,7 @@ class Prepared:
 
 
 def submission(monkeypatch, *, existing=False, failure=None, registry=None, owned=True, single=False,
-               download_dir='/sata/Download/Music', music_source='qqmusic', transfer_type='link'):
+               download_dir='/sata/Download/Music', music_source='qqmusic', transfer_type='link', service_factory=None):
     install_fake_modules(monkeypatch)
     qb = QB(existing)
     qb.row.update(save_path=download_dir,content_path=download_dir+'/album')
@@ -172,20 +172,20 @@ def submission(monkeypatch, *, existing=False, failure=None, registry=None, owne
     if failure:
         setattr(qb, failure, True)
     data = {'selected_downloads': deepcopy(registry or {})}
-    ns = plugin_methods({'_submit_selected', '_file_plan', 'guard_selected_transfer'},
+    ns = plugin_methods({'_submit_selected', '_file_plan', 'guard_selected_transfer', '_record_download_error'},
                         dict(Path=Path, time=time, replace=replace, SelectionError=selected.SelectionError,
                              choose_files=selected.choose_files, task_info=selected.task_info,
                              ensure_paused=selected.ensure_paused, track_file_selection=core.track_file_selection,
                              logger=SimpleNamespace(info=lambda *_: None, warning=lambda *_: None)))
     plugin = SimpleNamespace(SOURCE='qqmusic', plugin_name='QQ音乐歌单同步', _stop=Event(), _adapter_error='',
-        _selection_lock=RLock(), _config={'save_path':'/sata/Download/Music','downloader':'QB'},
+        _selection_lock=RLock(), _guard_lock=Lock(), _config={'save_path':'/sata/Download/Music','downloader':'QB'},
         _state={'tracks':{core.media_key(music_source,'one'):dict(song=song(core.media_key(music_source,'one')), present=True),
                           core.media_key(music_source,'two'):dict(song=song(core.media_key(music_source,'two'),'山川'),present=True)}},
         get_data=lambda key:deepcopy(data.get(key)), save_data=lambda k,v:data.update({k:deepcopy(v)}),
         _download_options=lambda:dict(downloader='QB',save_path=None),_default_downloader=lambda:'QB',
         _resolved_settings=lambda:dict(transfer_type=transfer_type),
-        _qb_service=lambda _:SimpleNamespace(instance=qb, module=SimpleNamespace(normalize_path=lambda p,n:str(p))))
-    for name in ('_file_plan','guard_selected_transfer'):
+        _download_service=lambda _: service_factory(qb) if service_factory else SimpleNamespace(instance=qb, module=SimpleNamespace(normalize_path=lambda p,n:str(p))))
+    for name in ('_file_plan','guard_selected_transfer','_record_download_error'):
         setattr(plugin,name,MethodType(ns[name],plugin))
     history = SimpleNamespace(media_source=music_source if owned else 'musicbrainz', music_type='recording',media_id='one')
     captured = []

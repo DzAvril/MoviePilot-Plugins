@@ -76,7 +76,7 @@ def setup(tmp_path,monkeypatch):
         _save=lambda value:data.update(state=deepcopy(value)),
         recognize_media=lambda **kwargs:SimpleNamespace(title='山川',artists=['李荣浩'],**kwargs),
         _status_transfer_rows=history,
-        _qb_service=lambda _:SimpleNamespace(instance=qb,module=SimpleNamespace(normalize_path=lambda path,name:path.as_posix())),
+        _download_service=lambda _:SimpleNamespace(instance=qb,module=SimpleNamespace(normalize_path=lambda path,name:path.as_posix())),
         _resolved_settings=lambda:{'library_path':str(library),'library_storage':'local'},
         _status_file_exists=lambda path,*args:bool(path) and Path(path).is_file())
     for name in names:setattr(plugin,name,MethodType(ns[name],plugin))

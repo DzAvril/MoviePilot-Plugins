@@ -2,7 +2,7 @@
 const PLUGIN_ICON = `/api/v1/system/img/1?imgurl=${encodeURIComponent('https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/main/icons/MusicPlaylistSync-1.7.1.png')}&cache=true`;
 
 const STATUSES = {searching: '待搜索', downloading: '下载中', downloaded: '待入库', library: '已入库',
-  pending: '待订阅', failed: '等待重试', transfer_failed: '整理失败', unknown: '状态待确认'};
+  pending: '待订阅', failed: '等待重试', download_failed: '下载提交失败', transfer_failed: '整理失败', unknown: '状态待确认'};
 const PATHS = {
   music: 'M9 18V5l12-2v13M9 8l12-2M9 18c0 1.7-1.8 3-4 3s-4-1.3-4-3 1.8-3 4-3 4 1.3 4 3Zm12-2c0 1.7-1.8 3-4 3s-4-1.3-4-3 1.8-3 4-3 4 1.3 4 3Z',
   refresh: 'M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.5-2L20 8M4 16l2.4 3A7 7 0 0 0 18 17',
@@ -30,6 +30,7 @@ export function applySongStates(data, response) {
   const songs = data.songs.map(song => ({...song, ...(response.song_states || {})[song.id]}));
   const counts = songs.reduce((result, song) => {result[song.status] = (result[song.status] || 0) + 1; return result;}, {});
   return {...data, songs, status_counts: counts, downloads: response.downloads ?? data.downloads,
+    downloader_status: response.downloader_status ?? data.downloader_status,
     status_updated_at: response.status_updated_at, status_warning: response.status_warning || ''};
 }
 
@@ -217,6 +218,7 @@ export function createPage(Vue) {
             h('td', {class: 'qqm-album', title: song.album}, song.album || '—'),
             h('td', {class: 'qqm-song-state', title: song.status_message}, [
               badge(song.status_label || STATUSES[song.status] || song.status, song.status_tone || (song.status === 'library' ? 'green' : 'muted')),
+              song.status === 'download_failed' && h('p', {class: 'qqm-small qqm-error-text'}, song.status_message),
               song.status === 'downloading' && typeof song.progress === 'number' && h('div', {class: 'qqm-song-progress'}, [
                 h('span', {class: 'qqm-mini-progress', role: 'progressbar', 'aria-label': `${song.title}音轨下载进度`,
                   'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': Math.round(song.progress * 1000) / 10},
@@ -239,6 +241,9 @@ export function createPage(Vue) {
             h('div', {class: 'qqm-setting-row'}, [h('span', label), h('code', data.value.settings[key] || '未配置'),
               badge(data.value.settings.follow_mp?.[key] ? '跟随 MP' : '插件配置')])),
           data.value.settings.error && h('p', {class: 'qqm-error-text'}, data.value.settings.error),
+          h('div', {class: 'qqm-setting-row'}, [h('span', '下载器支持状态'),
+            h('code', data.value.downloader_status?.type || '未识别'),
+            badge(data.value.downloader_status?.available ? '连接正常' : '需要检查', data.value.downloader_status?.available ? 'green' : 'warn')]),
           h('div', {class: 'qqm-setting-row'}, [h('span', '缓存入库方式'),
             h('code', ({link:'硬链接',copy:'复制'})[data.value.settings.transfer_type] || '请使用硬链接或复制'), badge('跟随 MP')]),
           h('p', {class: 'qqm-rule'}, '保持单曲订阅 · 整专下载做种 · 仅歌单歌曲入库 · CUE 整轨跳过'),
@@ -252,6 +257,7 @@ export function createPage(Vue) {
           h('div', {class: 'qqm-sync-line'}, [h('div', [badge(data.value.dry_run ? '预览模式' : data.value.enabled ? '持续同步中' : '已暂停同步', data.value.enabled ? 'green' : 'muted'),
             h('span', `${data.value.playlists.length} 个歌单 · 每 ${data.value.interval_minutes} 分钟检查`)]), h('span', `最近同步 ${time(data.value.overview.last_sync || data.value.overview.last_fetch)}`)]),
           (data.value.overview.last_error || data.value.adapter_error) && h('div', {class: 'qqm-notice qqm-error', role: 'alert'}, data.value.adapter_error || data.value.overview.last_error),
+          data.value.downloader_status?.error && h('div', {class: 'qqm-notice qqm-error', role: 'alert'}, data.value.downloader_status.error),
           data.value.status_warning && h('div', {class: 'qqm-notice qqm-error', role: 'status'}, data.value.status_warning),
           h('div', {class: 'qqm-stats'}, [
             ['歌单歌曲', data.value.overview.tracked, '跨歌单自动去重', '', 'music', 'purple'],
@@ -284,7 +290,7 @@ export function createPage(Vue) {
               badge(check.allowed ? '可选曲' : '已跳过', check.allowed ? 'green' : 'muted'),
               h('div', [h('strong', check.title), h('p', check.reason)]), h('time', time(check.at)),
             ])) : h('p', {class: 'qqm-muted'}, '暂无检查记录'))]),
-          h('footer', {class: 'qqm-footer'}, [h('span', '音乐歌单同步'), h('span', 'v1.10.1')]),
+          h('footer', {class: 'qqm-footer'}, [h('span', '音乐歌单同步'), h('span', 'v1.11.0')]),
         ],
       ]);
     },
@@ -336,7 +342,7 @@ export function createConfig(Vue) {
           field('downloader', '下载器', {placeholder: '跟随 MP 默认下载器'}),
           field('save_path', '下载目录', {placeholder: '跟随 MP 音乐下载目录'}),
           field('library_path', '音乐库目录', {placeholder: '跟随 MP 音乐库目录'}),
-          h('p', {class: 'qqm-rule'}, '需要 qBittorrent；整张分轨专辑下载做种，仅歌单歌曲入库。MP 音乐目录需使用硬链接或复制整理。'),
+          h('p', {class: 'qqm-rule'}, '支持 qBittorrent 和 Transmission；整张分轨专辑下载做种，仅歌单歌曲入库。MP 音乐目录需使用硬链接或复制整理。'),
           h('p', {class: 'qqm-rule'}, '新歌曲命中完整下载缓存时，直接使用源目录当前的硬链接或复制规则入库，保留做种原件；未完整的音轨继续等待或搜索。'),
           h('p', {class: 'qqm-rule'}, '音乐目录每 10 分钟重新核对，下载进度每 15 秒更新。过期历史每天清理，保留 90 天；使用中的订阅和选曲保护记录继续保留。')]),
         h('section', {class: 'qqm-panel qqm-config-section'}, [title('做种与空间清理', '默认保留完整专辑，可按 PT 站点做种要求设置清理期限。'),

@@ -37,7 +37,7 @@ def download_cards(registry, tracks, read_download=None):
     return cards
 
 
-def page_projection(state, overview, config, settings, registry, checks, adapter_error="", lifecycle=None, *, image_url=None):
+def page_projection(state, overview, config, settings, registry, checks, adapter_error="", lifecycle=None, *, image_url=None, downloader_status=None):
     songs = []
     for mid, item in state.get("tracks", {}).items():
         if not item.get("present"):
@@ -62,6 +62,7 @@ def page_projection(state, overview, config, settings, registry, checks, adapter
         "interval_minutes": config.get("interval", 60), "immediate_search": bool(config.get("immediate_search")),
         "unselected_cleanup_days": config.get("unselected_cleanup_days", 0),
         "adapter_error": adapter_error, "playlists": playlists, "songs": songs,
+        "downloader_status": downloader_status or {},
         "status_counts": dict(Counter(song["status"] for song in songs)),
         "status_updated_at": None, "status_warning": "",
         "unavailable": len(overview.get("playlist", {}).get("unavailable", [])),

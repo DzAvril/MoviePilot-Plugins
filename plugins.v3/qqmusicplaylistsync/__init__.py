@@ -37,6 +37,7 @@ from .library import LibraryIndexCache
 from .history import RETENTION_DAYS, cleanup_due, expired, local_source_absent, retired_download, prune_history
 from .seeding import maintain_entry, retention_days
 from .cache import cache_candidates, source_path, cached_destination, completed_cached_file, cache_source_exists, allow_cached_track
+from .downloaders import supported_service, check_shared_clients
 
 
 class QQMusicPlaylistSync(_PluginBase):
@@ -44,7 +45,7 @@ class QQMusicPlaylistSync(_PluginBase):
     plugin_name = "音乐歌单同步"
     plugin_desc = "持续同步 QQ 与网易云歌单，整专下载做种、仅歌单歌曲入库，支持到期清理未入库歌曲。"
     plugin_icon = "https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/main/icons/MusicPlaylistSync-1.7.1.png"
-    plugin_version = "1.10.1"
+    plugin_version = "1.11.0"
     plugin_author = "DzAvril"
     author_url = "https://github.com/DzAvril"
     plugin_config_prefix = "qqmusicplaylistsync_"
@@ -82,6 +83,7 @@ class QQMusicPlaylistSync(_PluginBase):
         self._state = self.get_data(self.STATE_KEY) or {"version": 1, "tracks": {}}
         self._guard_lock = threading.Lock()
         self._guard_cache = {}
+        self._downloader_checks = {}
         self._playlist_aliases = {}
         self._selection_lock = threading.RLock()
         self._status_lock = threading.Lock()
@@ -131,13 +133,54 @@ class QQMusicPlaylistSync(_PluginBase):
             reason = "种子文件检查失败，保留单曲订阅等待下次重试"
         return {"allowed": False, "reason": reason}
 
-    def _qb_service(self, downloader):
-        """解析支持分轨选择的原生 qBittorrent 服务。"""
+    def _download_service(self, downloader):
+        """按实际名称解析 QB/TR，旧 QB 任务继续使用原服务对象。"""
         from app.sdk.services import DownloaderHelper
-        service = DownloaderHelper().get_service(name=downloader, type_filter="qbittorrent")
-        if not service:
-            raise SelectionError("选曲下载需要已配置的 qBittorrent，任务未启动")
-        return service
+        return supported_service(DownloaderHelper().get_service(name=downloader), downloader)
+
+    def _check_other_downloaders(self, entry):
+        """清理前才检查其它已启用 QB/TR，跨下载器共用目录时保留文件。"""
+        from app.sdk.services import DownloaderHelper
+        services = {name: self._download_service(name) for name, config in DownloaderHelper().get_configs().items()
+                    if name != entry["downloader"] and config.type in ("qbittorrent", "transmission")}
+        check_shared_clients(entry, services)
+
+    def _downloader_status(self, site_downloader=None):
+        """只读探测最多每分钟一次；页面也展示当前名称、类型及失败原因。"""
+        name = self._download_options()["downloader"] or site_downloader or self._default_downloader()
+        now = time.monotonic()
+        with self._guard_lock:
+            cached = self._downloader_checks.get(name)
+            if cached and now - cached[0] < 60:
+                return dict(cached[1])
+        result = {"name": name, "type": None, "supported": False, "available": False, "error": ""}
+        try:
+            service = self._download_service(name)
+            result.update(type=service.type, supported=True)
+            _, error = service.instance.get_torrents(ids=["0" * 40])
+            if error:
+                raise SelectionError(f"无法连接下载器 {name}，请检查 MP 下载器连接设置")
+            result["available"] = True
+        except Exception as error:
+            result["error"] = str(error) if isinstance(error, SelectionError) else f"下载器 {name or '（未配置）'} 暂不可用，请检查 MP 设置"
+        with self._guard_lock:
+            if len(self._downloader_checks) >= 16:
+                self._downloader_checks.clear()
+            self._downloader_checks[name] = (now, result)
+        return dict(result)
+
+    def _record_download_error(self, media, reason, downloader=None):
+        """提交错误独立持久化，不能把文件核验放行当成提交成功。"""
+        mid = track_key(self._state, media.media_source, media.media_id)
+        with self._guard_lock:
+            errors = self.get_data("download_errors") or {}
+            if reason:
+                errors[mid] = {"at": time.time(), "reason": reason, "downloader": downloader}
+            else:
+                errors.pop(mid, None)
+            if len(errors) > 2000:
+                errors = dict(sorted(errors.items(), key=lambda pair: pair[1]["at"])[-2000:])
+            self.save_data("download_errors", errors)
 
     def _download_options(self):
         """每次读取当前 MP 音乐订阅默认值，空字段不固化成安装时路径。"""
@@ -202,13 +245,15 @@ class QQMusicPlaylistSync(_PluginBase):
             torrent_hash = TorrentHelper.get_torrent_hash(prepared.torrent_content)
             if not torrent_hash:
                 raise SelectionError("无法核验种子身份，任务未启动")
-            service = self._qb_service(actual_downloader)
+            service = self._download_service(actual_downloader)
             server, module = service.instance, service.module
             normalized_dir = module.normalize_path(prepared.download_dir, actual_downloader)
             # 串行保护同一专辑并发命中，避免歌曲 A 与 B 的勾选结果互相覆盖。
             with self._selection_lock:
                 registry = self.get_data("selected_downloads") or {}
                 entry = registry.get(torrent_hash)
+                if entry and entry.get("downloader") != actual_downloader:
+                    raise SelectionError("该种子已有其它下载器的歌单任务，未改变原任务")
                 existing = task_info(server, torrent_hash)
                 if existing:
                     history = owner.download_history_repository.get_by_hash(torrent_hash)
@@ -282,6 +327,7 @@ class QQMusicPlaylistSync(_PluginBase):
                     raise SelectionError("选曲已保存，但启动失败，任务保持暂停")
                 entry.update(phase="started", error="")
                 self.save_data("selected_downloads", registry)
+                self._record_download_error(context.media_info, "")
                 logger.info(f"歌单整专下载做种：{context.media_info.title}，仅 {len(selected)}/{plan['audio_count']} 首入库")
                 return torrent_hash, None
         except Exception as error:
@@ -295,6 +341,7 @@ class QQMusicPlaylistSync(_PluginBase):
                     registry[torrent_hash] = entry
                     self.save_data("selected_downloads", registry)
             logger.warning(f"QQ 歌单选曲未启动：{message}")
+            self._record_download_error(context.media_info, message, actual_downloader)
             return None, message
 
     @eventmanager.register(ChainEventType.TransferIntercept)
@@ -324,7 +371,7 @@ class QQMusicPlaylistSync(_PluginBase):
         entry = (self.get_data("selected_downloads") or {}).get(torrent_hash)
         if not entry:
             return {"success": False, "message": "没有本插件管理的选曲任务"}
-        server = self._qb_service(entry["downloader"]).instance
+        server = self._download_service(entry["downloader"]).instance
         row = task_info(server, torrent_hash)
         files = server.get_files(torrent_hash) if row else []
         return {"success": True, **entry, "state": row.get("state") if row else "missing",
@@ -402,6 +449,11 @@ class QQMusicPlaylistSync(_PluginBase):
                 return event
         # 同步开关暂停后，已生成的原生订阅仍必须遵守单曲边界。
         torrent = context.torrent_info
+        downloader = self._downloader_status(getattr(torrent, "site_downloader", None))
+        if not downloader["available"]:
+            data.cancel, data.source, data.reason = True, self.plugin_name, downloader["error"]
+            self._record_download_error(media, downloader["error"], downloader["name"])
+            return event
         reason = "无法确认种子文件内容，保留单曲订阅等待可验证资源"
         plan = self._inspect_plan(media, torrent)
         accepted, reason = plan["allowed"], plan["reason"]
@@ -722,7 +774,7 @@ class QQMusicPlaylistSync(_PluginBase):
                             self.save_data("selected_downloads", registry)
                         if not dest:
                             if service is None:
-                                service = self._qb_service(entry["downloader"])
+                                service = self._download_service(entry["downloader"])
                                 row = task_info(service.instance, key)
                                 rows = service.instance.get_files(key) if row else []
                             if not row:
@@ -901,7 +953,7 @@ class QQMusicPlaylistSync(_PluginBase):
         except Exception:
             resolved = {"error": "MP 默认下载器或音乐目录暂时无法读取"}
         return {"success": True, "enabled": self.get_state(), "dry_run": self._config.get("dry_run"),
-                "resolved_settings": resolved,
+                "resolved_settings": resolved, "downloader_status": self._downloader_status(),
                 "interval_minutes": self._config["interval"], "subscribe_workers": self._config["subscribe_workers"],
                 "maintenance": {"library_scan_interval_seconds": self._status_index.ttl,
                                 "library_index": self._status_index.snapshot(),
@@ -937,10 +989,11 @@ class QQMusicPlaylistSync(_PluginBase):
         registry = self.get_data("selected_downloads") or {}
         with self._status_lock:
             lifecycle = song_lifecycle(state, registry, {}, [], library_files=self._status_library_files,
-                                       file_exists=lambda path, storage: self._status_file_exists(path, storage, settings))
+                                       file_exists=lambda path, storage: self._status_file_exists(path, storage, settings),
+                                       download_errors=self.get_data("download_errors") or {})
         return page_projection(state, summary(state), self._config, settings, registry,
                                self.get_data("single_track_checks") or [], self._adapter_error, lifecycle,
-                               image_url=SecurityUtils.sign_url)
+                               image_url=SecurityUtils.sign_url, downloader_status=self._downloader_status())
 
     def _status_file_exists(self, path, storage, settings):
         root = settings.get("library_path")
@@ -976,7 +1029,7 @@ class QQMusicPlaylistSync(_PluginBase):
             groups.setdefault(entry.get("downloader"), []).append(torrent_hash)
         for downloader, hashes in groups.items():
             try:
-                server = self._qb_service(downloader).instance
+                server = self._download_service(downloader).instance
                 rows, error = server.get_torrents(ids=hashes)
                 if error:
                     raise SelectionError("下载器状态暂不可用")
@@ -1038,7 +1091,7 @@ class QQMusicPlaylistSync(_PluginBase):
                     entry["hash"] = key
                     before = deepcopy(entry)
                     try:
-                        service = self._qb_service(entry["downloader"])
+                        service = self._download_service(entry["downloader"])
                         target = next((state.get("tracks", {}).get(mid, {}).get("song") for mid in entry.get("matches", {})
                                        if state.get("tracks", {}).get(mid, {}).get("song")), None)
                         pending = target is None
@@ -1051,7 +1104,8 @@ class QQMusicPlaylistSync(_PluginBase):
                             settings=settings, days=self._config["unselected_cleanup_days"], now=time.time(),
                             transfers=lambda: self._status_transfer_rows({"media_types": [MediaType.MUSIC], "download_hash": key}),
                             save=lambda: self.save_data("selected_downloads", registry),
-                            audio_extensions=self.AUDIO_EXTENSIONS, pending_selection=pending, stopped=self._stop.is_set)
+                            audio_extensions=self.AUDIO_EXTENSIONS, pending_selection=pending, stopped=self._stop.is_set,
+                            check_other_clients=lambda: self._check_other_downloaders(entry))
                         changed += before.get("download_mode") != entry.get("download_mode")
                         cleaned += before.get("cleanup", {}).get("state") != "done" and entry.get("cleanup", {}).get("state") == "done"
                     except Exception as error:
@@ -1143,11 +1197,12 @@ class QQMusicPlaylistSync(_PluginBase):
             except Exception:
                 warning = "部分本地歌曲标签暂时无法读取，入库状态将在下次更新时核对"
             tasks = self._status_download_tasks(registry, set(confirmed["states"]) - set(confirmed["library_files"]))
-            lifecycle = song_lifecycle(state, registry, tasks, transfers, library_files=confirmed["library_files"], file_exists=exists)
+            lifecycle = song_lifecycle(state, registry, tasks, transfers, library_files=confirmed["library_files"], file_exists=exists,
+                                       download_errors=self.get_data("download_errors") or {})
             self._status_library_files = lifecycle["library_files"]
             return {"success": True, "downloads": download_cards(registry, state.get("tracks", {}), lambda key: tasks[key]),
                     "song_states": lifecycle["states"], "status_counts": lifecycle["counts"],
-                    "status_updated_at": time.time(), "status_warning": warning}
+                    "status_updated_at": time.time(), "status_warning": warning, "downloader_status": self._downloader_status()}
 
     def get_render_mode(self):
         """使用宿主 Vue 共享运行时及插件静态资源入口。"""
@@ -1165,7 +1220,7 @@ class QQMusicPlaylistSync(_PluginBase):
             ("VSwitch", "immediate_search", "建好订阅立即搜索下载", {}),
             ("VTextField", "unselected_cleanup_days", "未入库歌曲保留天数（0 = 不清理）", {"type": "number", "min": 0, "max": 3650,
                 "hint": "整专下载且歌单歌曲全部入库后计时，并要求累计做种达到该天数；到期移除种子，仅删除未入库音频。请按站点做种要求设置。", "persistentHint": True}),
-            ("VTextField", "downloader", "下载器（留空跟随 MP 默认）", {"placeholder": "使用 MP 音乐订阅或系统默认下载器", "hint": "分轨选曲需要 qBittorrent", "persistentHint": True}),
+            ("VTextField", "downloader", "下载器（留空跟随 MP 默认）", {"placeholder": "使用 MP 音乐订阅或系统默认下载器", "hint": "支持 qBittorrent 和 Transmission；整专下载，仅歌单歌曲入库", "persistentHint": True}),
             ("VTextField", "save_path", "下载目录（留空跟随 MP 音乐目录）", {"placeholder": "使用设置中的音乐下载目录"}),
             ("VTextField", "library_path", "音乐库目录（留空跟随 MP 音乐目录）", {"placeholder": "使用设置中的音乐库目录", "hint": "用于检查已有歌曲；整理位置由 MP 目录设置决定", "persistentHint": True}),
         ]

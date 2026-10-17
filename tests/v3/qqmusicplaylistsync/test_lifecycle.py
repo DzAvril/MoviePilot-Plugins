@@ -162,7 +162,7 @@ def test_downloader_is_read_once_per_service_and_only_unconfirmed_tasks_read_fil
         calls.append(('files', torrent_hash))
         return []
     server = SimpleNamespace(get_torrents=get_torrents, get_files=get_files)
-    plugin = SimpleNamespace(_qb_service=lambda _: SimpleNamespace(instance=server))
+    plugin = SimpleNamespace(_download_service=lambda _: SimpleNamespace(instance=server))
     ns = plugin_methods({'_status_download_tasks'}, {'SelectionError': ValueError})
     result = ns['_status_download_tasks'](plugin, {'first': {'downloader': 'QB', 'matches': {'a': 'a.flac'}},
               'done': {'downloader': 'QB', 'matches': {'b': 'b.flac'}}}, {'a'})
@@ -224,6 +224,7 @@ def test_live_endpoint_accepts_verified_existing_tags_despite_duplicate_transfer
     needed_calls=[]
     plugin=SimpleNamespace(STATE_KEY='state',SOURCE='qqmusic',_status_lock=Lock(),
         _status_library_files={},
+        _downloader_status=lambda:{},
         get_data=lambda key: state if key=='state' else registry,
         _resolved_settings=lambda:{'library_path':'/music','library_storage':'local'},
         _status_file_exists=lambda path,storage,settings:path in paths,

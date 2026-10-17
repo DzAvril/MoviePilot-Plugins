@@ -108,6 +108,19 @@ test('live song updates replace subscription labels with actual lifecycle while 
   assert.equal(later.status_updated_at,115);
 });
 
+test('downloader errors and recovery propagate into the visible song and settings data', () => {
+  const data={songs:[songs[0]],downloader_status:{available:true,type:'transmission'}};
+  const failed=applySongStates(data,{song_states:{'0':{status:'download_failed',status_message:'无法连接下载器 TR'}},
+    downloader_status:{available:false,type:'transmission',error:'无法连接下载器 TR'}});
+  assert.equal(failed.downloader_status.available,false);
+  assert.equal(failed.songs[0].status_message,'无法连接下载器 TR');
+  assert.equal(filterSongs(failed.songs,'','','download_failed').length,1);
+  const recovered=applySongStates(failed,{song_states:{'0':{status:'downloading',status_message:'音轨下载中'}},
+    downloader_status:{available:true,type:'transmission',error:''}});
+  assert.equal(recovered.downloader_status.error,'');
+  assert.equal(recovered.songs[0].status,'downloading');
+});
+
 test('playlist covers use MP caching, fall back after load failure, and retry when the platform changes the cover', () => {
   const Vue = {defineComponent:value=>value, ref:value=>({value}), h:(type,props,children)=>({type,props,children})};
   const playlist = {title:'我的歌单', cover_url:'https://p1.music.126.net/cover.jpg?a=1&b=2'};

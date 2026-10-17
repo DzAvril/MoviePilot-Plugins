@@ -34,7 +34,7 @@ def _track_progress(entry, filename, task):
     return _progress(matches[0].get("progress"))
 
 
-def song_lifecycle(state, registry, tasks, transfers, *, library_files=None, file_exists):
+def song_lifecycle(state, registry, tasks, transfers, *, library_files=None, file_exists, download_errors=None):
     """Keep subscription bookkeeping intact; one completed file never completes its album."""
     tracks = {mid: item for mid, item in state.get("tracks", {}).items() if item.get("present")}
     confirmed = {}
@@ -70,6 +70,8 @@ def song_lifecycle(state, registry, tasks, transfers, *, library_files=None, fil
             failed = bool(item.get("cache_import_error"))
             states[mid] = _state("transfer_failed" if failed else "downloaded", "整理失败" if failed else "待入库",
                 item.get("cache_import_error") or "已找到完整下载缓存，等待 MP 整理入库", 1, "warn" if failed else "purple")
+        elif mid in (download_errors or {}):
+            states[mid] = _state("download_failed", "下载提交失败", download_errors[mid]["reason"], tone="warn")
         elif item.get("status") == "pending":
             states[mid] = _state("pending", "待订阅", "等待创建 MP 单曲订阅")
         elif item.get("status") == "failed":
@@ -79,7 +81,7 @@ def song_lifecycle(state, registry, tasks, transfers, *, library_files=None, fil
         else:
             states[mid] = _state("searching", "待搜索", "等待 MP 搜索和匹配可用资源")
 
-    rank = {"searching": 0, "pending": 0, "failed": 0, "unknown": 1,
+    rank = {"searching": 0, "pending": 0, "failed": 0, "unknown": 1, "download_failed": 2,
             "transfer_failed": 2, "downloading": 3, "downloaded": 4, "library": 5}
     for torrent_hash, entry in registry.items():
         sources = dict(zip(entry.get("files", []), entry.get("fullpaths", [])))

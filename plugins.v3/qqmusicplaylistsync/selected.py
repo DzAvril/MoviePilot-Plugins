@@ -1,4 +1,4 @@
-"""qB 分轨选择与 MP 3.1.6 窄范围运行时适配；不修改宿主磁盘源码。"""
+"""QB/TR 文件核验与 MP 3.1.6 窄范围运行时适配；不修改宿主磁盘源码。"""
 
 import inspect
 import time
@@ -34,7 +34,7 @@ def ensure_paused(server, torrent_hash):
 
 
 def choose_files(server, torrent_hash, folder_name, files, wanted):
-    """必须先暂停；用名称映射真实 qB ID，设置后回读核验才允许调用者启动。"""
+    """必须先暂停；用名称映射真实文件 ID，设置后回读核验才允许调用者启动。"""
     expected = {str(PurePosixPath(name)) for name in files}
     wanted = set(wanted)
     if not wanted or not wanted.issubset(expected):

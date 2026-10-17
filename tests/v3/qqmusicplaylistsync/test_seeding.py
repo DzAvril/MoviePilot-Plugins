@@ -116,6 +116,33 @@ def test_retention_requires_both_elapsed_days_and_actual_seeding_time(case):
     assert not qb.exists and not (root/FILES[1]).exists()
 
 
+def test_transmission_requests_explicit_seeding_time_and_defers_when_unavailable(case):
+    entry,qb,options,root,*_=case
+    qb.row['seeding_time']=None
+    qb.seeding_seconds=lambda _:None
+    with pytest.raises(selected.SelectionError,match='做种时长无法核验'):
+        run(case)
+    assert qb.exists and (root/FILES[1]).exists() and 'ready_at' not in entry['cleanup']
+    qb.seeding_seconds=lambda _:100
+    run(case)
+    assert entry['cleanup']['seed_seconds_at_ready']==100
+    qb.seeding_seconds=lambda _:100+DAY
+    options['now']+=DAY
+    run(case)
+    assert entry['cleanup']['state']=='done' and not qb.exists and not (root/FILES[1]).exists()
+
+
+def test_cross_client_shared_files_are_checked_before_pause_or_removal(case):
+    due(case)
+    before=list(case[1].calls)
+    def shared():
+        raise selected.SelectionError('其它下载器仍在使用')
+    with pytest.raises(selected.SelectionError,match='其它下载器'):
+        run(case,check_other_clients=shared)
+    assert case[1].calls==before+['read-files']
+    assert case[1].exists and (case[3]/FILES[1]).exists()
+
+
 def test_cleanup_unlinks_only_unimported_audio_and_keeps_hardlinks_cover_and_library(case):
     due(case)
     run(case)
@@ -259,7 +286,7 @@ def test_real_plugin_maintenance_preserves_registry_and_defers_new_playlist_song
         get_state=lambda:True,get_data_path=lambda:tmp_path/'plugin-data',get_data=lambda key:deepcopy(data.get(key)),
         save_data=lambda key,value:data.update({key:deepcopy(value)}),
         _resolved_settings=lambda:{**options['settings'],'transfer_type':'link'},
-        _qb_service=lambda _:SimpleNamespace(instance=qb,module=SimpleNamespace(normalize_path=lambda p,n:p.as_posix())),
+        _download_service=lambda _:SimpleNamespace(instance=qb,module=SimpleNamespace(normalize_path=lambda p,n:p.as_posix())),
         _status_transfer_rows=lambda filters:transfers)
     method=plugin_methods({'maintain_downloads'},dict(fcntl=fcntl,deepcopy=deepcopy,time=time,Path=Path,
         maintain_entry=seeding.maintain_entry,SelectionError=selected.SelectionError,
