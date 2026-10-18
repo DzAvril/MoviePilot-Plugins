@@ -4,11 +4,14 @@ import json
 from .DoubanHelper import DoubanHelper
 from .subtitles import SubtitleService, SubtitleError
 from .automation import SubtitleAutomation
+from .selection import validate_lookup, project_media, project_media_choices
 from fastapi import Body, File, UploadFile
 from .tool_install import install_tool
 from fastapi.responses import FileResponse
 from app.helper.directory import DirectoryHelper
 from app.chain.media import MediaChain
+from app.domain.metainfo import MetaInfo
+from itertools import zip_longest
 from app.schemas.types import MediaSource, MediaType
 from enum import Enum
 
@@ -39,7 +42,7 @@ class ZvideoHelper(_PluginBase):
     # 插件图标
     plugin_icon = "zvideo.png"
     # 插件版本
-    plugin_version = "1.9.0"
+    plugin_version = "1.9.1"
     # 插件作者
     plugin_author = "DzAvril"
     # 作者主页
@@ -247,7 +250,7 @@ class ZvideoHelper(_PluginBase):
                             )
 
     def get_api(self) -> List[Dict[str, Any]]:
-        routes = [("subtitle_status", self.subtitle_status, "GET"), ("subtitle_search", self.subtitle_search, "GET"),
+        routes = [("subtitle_media_search", self.subtitle_media_search, "GET"), ("subtitle_selected", self.subtitle_selected, "POST"), ("subtitle_status", self.subtitle_status, "GET"), ("subtitle_search", self.subtitle_search, "GET"),
             ("subtitle_preview", self.subtitle_preview, "POST"), ("subtitle_download", self.subtitle_download, "POST"),
             ("subtitle_file", self.subtitle_file, "GET"), ("subtitle_library", self.subtitle_library, "GET"),
             ("subtitle_scan", self.subtitle_scan, "POST"), ("subtitle_auth_start", self.subtitle_auth_start, "POST"),
@@ -260,6 +263,36 @@ class ZvideoHelper(_PluginBase):
     def subtitle_search(self, keyword: str = "", imdb_id: str = ""):
         if not self._subtitle_enabled:return {"success":False, "message":"请先开启字幕功能"}
         return self._subtitle_service.search(keyword, imdb_id)
+
+    def subtitle_media_search(self, keyword: str = "", media_type: str = "all"):
+        if not self._subtitle_enabled:return {"success":False, "message":"请先开启字幕功能"}
+        try:keyword = validate_lookup(keyword, media_type)
+        except ValueError as error:return {"success":False, "message":str(error)}
+        try:
+            chain = MediaChain();groups = []
+            for kind in ([MediaType.MOVIE,MediaType.TV] if media_type == 'all' else [MediaType.MOVIE if media_type == 'movie' else MediaType.TV]):
+                meta = MetaInfo(keyword);meta.type = kind
+                groups.append(chain.search_medias(meta=meta, media_source=MediaSource.TMDB) or [])
+            records = [item for row in zip_longest(*groups) for item in row if item is not None]
+            items = [item for item in project_media_choices(records) if media_type == 'all' or item['media_type'] == media_type]
+            return {"success":True, "items":items, "count":len(items),
+                "message":"" if items else "未找到作品，可尝试原名或加上年份再搜索"}
+        except Exception:
+            return {"success":False, "message":"影视资料查询暂不可用，请检查 MoviePilot 的 TMDB 连接后重试"}
+
+    def subtitle_selected(self, payload: dict = Body(...)):
+        if not self._subtitle_enabled:return {"success":False, "message":"请先开启字幕功能"}
+        identifier, kind = str(payload.get('tmdb_id') or ''), payload.get('media_type')
+        if not identifier.isascii() or not identifier.isdigit() or not 1 <= len(identifier) <= 12 or int(identifier) <= 0 or not isinstance(kind,str) or kind not in {'movie','tv'}:
+            return {"success":False, "message":"请先从候选列表选择一部电影或剧集"}
+        try:
+            details = MediaChain().recognize_media(media_source=MediaSource.TMDB, media_id=identifier,
+                mtype=MediaType.MOVIE if kind == 'movie' else MediaType.TV)
+            media = project_media(details) if details else None
+        except Exception:media = None
+        if not media or media['id'] != identifier or media['media_type'] != kind:
+            return {"success":False, "message":"无法读取所选作品资料，请重新选择或稍后重试"}
+        return self._subtitle_service.search_selected(media)
 
     def subtitle_preview(self, payload: dict = Body(...)):
         if not self._subtitle_enabled:return {"success":False, "message":"请先开启字幕功能"}

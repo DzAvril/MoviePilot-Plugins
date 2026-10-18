@@ -15,6 +15,7 @@ import tempfile
 
 from .library import TEXT, chinese_text, chinese_label, decode_text
 from .authorization import BrowserAuthorization
+from .selection import selected_candidates
 
 
 class SubtitleError(Exception):
@@ -146,6 +147,19 @@ class SubtitleService:
         finally:
             self._lock.release()
 
+
+    def search_selected(self, media):
+        queries = list(dict.fromkeys(q for q in (media.get('imdb_id'), media.get('title'), media.get('original_title')) if q))
+        attempts = []
+        for query in queries:
+            response = self.search(imdb_id=query) if re.fullmatch(r"tt\d{6,12}", query) else self.search(keyword=query)
+            attempts.extend(response.get('queries',[]))
+            if not response.get('success'):return {**response, 'selected_media':media}
+            candidates = selected_candidates(response.get('candidates',[]),media)
+            if candidates:
+                return {**response, 'selected_media':media, 'candidates':candidates, 'count':len(candidates), 'queries':attempts}
+        return {'success':True, 'selected_media':media, 'candidates':[], 'count':0, 'queries':attempts,
+            'message':'未找到能确认属于所选作品的字幕；可核对年份或选择其他作品'}
 
     def _remember(self, data, candidates):
         lookup = {(str(i.get("sub_id") or ""), unescape(str(i.get("sub_title") or ""))): (i, g)

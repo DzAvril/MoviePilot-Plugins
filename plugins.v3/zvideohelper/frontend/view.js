@@ -8,7 +8,7 @@ export function createPage(Vue) {
     name: 'ZvideoSubtitlePage', props: {api: Object, pluginId: String}, emits: ['layout', 'switch', 'close'],
     setup(props, {emit}) {
       const scanKeyword = ref('');
-      const keyword = ref(''), imdb = ref(''), filter = ref(''), page = ref(1);
+      const keyword = ref(''), mediaType = ref('all'), choices = ref(null), selectedMedia = ref(null), choicePage = ref(1), filter = ref(''), page = ref(1);
       const status = ref(null), result = ref(null), busy = ref(false), error = ref(''), message = ref('');
       const library = ref(null), auth = ref(null), code = ref(''), files = ref(null), selectedFile = ref(''), destination = ref('');
       const toolFile = ref(null);
@@ -24,6 +24,8 @@ export function createPage(Vue) {
       const rows = computed(() => (result.value?.candidates || []).filter(item => item.title.toLowerCase().includes(filter.value.trim().toLowerCase())));
       const pages = computed(() => Math.max(1, Math.ceil(rows.value.length / 10)));
       const visible = computed(() => rows.value.slice((Math.min(page.value,pages.value)-1)*10, Math.min(page.value,pages.value)*10));
+      const choicePages = computed(() => Math.max(1,Math.ceil((choices.value?.items.length || 0)/8)));
+      const visibleChoices = computed(() => (choices.value?.items || []).slice((choicePage.value-1)*8,choicePage.value*8));
       const media = computed(() => (library.value?.items || []).filter(i => listFilter.value === 'all' || i.state === listFilter.value));
       const loadStatus = async () => {
         try {status.value = await get('subtitle_status');library.value = await get('subtitle_library');}
@@ -35,16 +37,37 @@ export function createPage(Vue) {
         try {await fn();} catch (caught) {error.value = caught.message || '操作失败，请稍后重试';}
         finally {working.value = false;}
       };
-      const search = async () => {
-        if (busy.value) return;
-        error.value = '';result.value = null;files.value = null;page.value = 1;filter.value = '';
-        if (!keyword.value.trim() && !imdb.value.trim()) {error.value = '请输入片名或 IMDb ID';return;}
+      const resetManual = () => {
+        choices.value = null;selectedMedia.value = null;result.value = null;files.value = null;
+        destination.value = '';page.value = 1;choicePage.value = 1;filter.value = '';error.value = '';message.value = '';
+      };
+      const findMedia = async () => {
+        if (busy.value || working.value) return;
+        resetManual();
+        if (!keyword.value.trim()) {error.value = '请输入影视名称';return;}
         busy.value = true;
         try {
-          const response = await get('subtitle_search', {params:{keyword:keyword.value.trim(),imdb_id:imdb.value.trim()},timeout:180000});
-          if (!response?.success) throw new Error(response?.message || '字幕搜索失败');result.value = response;
+          const response = await get('subtitle_media_search',{params:{keyword:keyword.value.trim(),media_type:mediaType.value},timeout:90000});
+          if (!response?.success) throw new Error(response?.message || '影视查询失败');choices.value = response;
+        } catch (caught) {error.value = caught.message || '影视查询失败';}
+        finally {busy.value = false;}
+      };
+      const chooseMedia = async (item, targetId = '') => {
+        if (busy.value || working.value) return;
+        error.value = '';message.value = '';result.value = null;files.value = null;page.value = 1;filter.value = '';
+        selectedMedia.value = item;destination.value = targetId;busy.value = true;
+        try {
+          const response = await post('subtitle_selected',{tmdb_id:item.id,media_type:item.media_type});
+          selectedMedia.value = response.selected_media || item;result.value = response;
         } catch (caught) {error.value = caught.message || '字幕搜索失败';}
         finally {busy.value = false;}
+      };
+      const searchFromLibrary = item => {
+        keyword.value = item.title;mediaType.value = item.season != null ? 'tv' : 'movie';
+        if (item.tmdb_id) {
+          choices.value = null;
+          chooseMedia({id:String(item.tmdb_id),title:item.title,year:item.year,media_type:mediaType.value},item.id);
+        } else findMedia();
       };
       const uploadTool = () => act(async () => {
         if (!toolFile.value) return;
@@ -114,11 +137,25 @@ export function createPage(Vue) {
           h('label',{class:'zvh-field'},[h('span','检查结果'),h('select',{'aria-label':'检查结果',value:listFilter.value,onChange:e=>{listFilter.value=e.target.value;}},[
             ...['missing','unknown','present','excluded','all'].map(v=>h('option',{value:v},v==='all'?'全部':stateText(v)))])]),
           media.value.length ? h('div',{class:'zvh-library-list'},media.value.slice(0,60).map(item=>h('div',{class:'zvh-library-item',key:item.id},[
-            h('strong',`${item.title} · ${stateText(item.state)}`),h('small',item.path),h('span',item.reason),button('为此媒体搜索',()=>{keyword.value=item.title;imdb.value=item.imdb_id;destination.value=item.id;search();},busy.value || working.value)]))) : h('p',{class:'zvh-muted'},'当前列表没有此类媒体。')]),
-        h('form',{class:'zvh-panel zvh-search',onSubmit:e=>{e.preventDefault();search();}},[
-          h('label',{class:'zvh-field zvh-keyword'},[h('span','片名或 IMDb ID'),h('input',{'aria-label':'片名或 IMDb ID',value:keyword.value,maxlength:200,disabled:busy.value,placeholder:'如：肖申克的救赎 / tt0111161',onInput:e=>{keyword.value=e.target.value;}})]),
-          h('label',{class:'zvh-field'},[h('span','IMDb ID（可选）'),h('input',{'aria-label':'IMDb ID（可选）',value:imdb.value,maxlength:14,disabled:busy.value,onInput:e=>{imdb.value=e.target.value;}})]),
-          h('button',{type:'submit',class:'zvh-button zvh-primary',disabled:busy.value || working.value || !status.value?.authorized || !status.value?.enabled},busy.value?'正在搜索…':'搜索字幕')]),
+            h('strong',`${item.title} · ${stateText(item.state)}`),h('small',item.path),h('span',item.reason),button('为此媒体搜索',()=>searchFromLibrary(item),busy.value || working.value)]))) : h('p',{class:'zvh-muted'},'当前列表没有此类媒体。')]),
+        h('form',{class:'zvh-panel zvh-settings',onSubmit:e=>{e.preventDefault();findMedia();}},[
+          h('h3','手动查找字幕'),h('p',{class:'zvh-muted'},'先按名称查找电影或剧集，核对年份并选择作品，再搜索它的字幕。'),
+          h('div',{class:'zvh-search'},[
+            h('label',{class:'zvh-field zvh-keyword'},[h('span','影视名称'),h('input',{'aria-label':'影视名称',value:keyword.value,maxlength:200,disabled:busy.value || working.value,placeholder:'如：异形 / 肖申克的救赎',onInput:e=>{keyword.value=e.target.value;resetManual();}})]),
+            h('label',{class:'zvh-field'},[h('span','影视类型'),h('select',{'aria-label':'影视类型',value:mediaType.value,disabled:busy.value || working.value,onChange:e=>{mediaType.value=e.target.value;resetManual();}},[
+              h('option',{value:'all'},'电影和剧集'),h('option',{value:'movie'},'电影'),h('option',{value:'tv'},'剧集')])]),
+            h('button',{type:'submit',class:'zvh-button zvh-primary',disabled:busy.value || working.value || !status.value?.enabled},busy.value && !selectedMedia.value?'正在查找…':'查找影视')])]),
+        choices.value && h('section',{class:'zvh-panel zvh-settings'},[
+          h('h3',`找到 ${choices.value.count} 部候选作品`),h('p',{class:'zvh-muted'},'请选择你要找字幕的那一部；同名作品可根据年份、类型和简介区分。'),
+          h('div',{class:'zvh-media-choices'},visibleChoices.value.map(item=>h('article',{key:item.media_type+item.id,class:['zvh-media-choice',selectedMedia.value?.id===item.id && selectedMedia.value?.media_type===item.media_type && 'zvh-selected']},[
+            h('h4',item.title),h('p',{class:'zvh-muted'},`${item.media_type==='movie'?'电影':'剧集'} · ${item.year || '年份未知'}`),
+            item.original_title && item.original_title!==item.title && h('small',item.original_title),
+            item.overview && h('p',{class:'zvh-overview'},item.overview),
+            h('button',{type:'button',class:'zvh-button zvh-primary','aria-label':`为《${item.title}》（${item.year || '年份未知'}·${item.media_type==='movie'?'电影':'剧集'}）查找字幕`,onClick:()=>chooseMedia(item),disabled:busy.value || working.value || !status.value?.authorized},'查找字幕')]))),
+          !choices.value.count && h('p',choices.value.message),
+          choicePages.value>1 && h('footer',{class:'zvh-pagination'},[h('span',`${choices.value.count} 部作品`),h('div',[
+            button('上一页作品',()=>{choicePage.value--;},choicePage.value<=1),h('span',`${choicePage.value} / ${choicePages.value}`),button('下一页作品',()=>{choicePage.value++;},choicePage.value>=choicePages.value)])])]),
+        selectedMedia.value && h('div',{class:'zvh-notice',role:'status'},`已选择：${selectedMedia.value.title}（${selectedMedia.value.year || '年份未知'} · ${selectedMedia.value.media_type==='movie'?'电影':'剧集'}）${busy.value?'，正在查找字幕…':'，仅显示这部作品的字幕'}`),
         result.value && h('section',{class:'zvh-panel'},[
           h('div',{class:'zvh-results-heading'},[h('h3',`找到 ${result.value.count} 个字幕版本`),h('input',{'aria-label':'筛选搜索结果',placeholder:'筛选名称、语言、版本',value:filter.value,onInput:e=>{filter.value=e.target.value;page.value=1;}})]),
           h('div',{class:'zvh-table-wrap'},[h('table',{class:'zvh-table'},[h('thead',[h('tr',[h('th','字幕版本'),h('th','格式'),h('th','操作')])]),h('tbody',visible.value.map(item=>h('tr',{key:item.id},[
