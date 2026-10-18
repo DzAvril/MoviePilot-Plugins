@@ -2,7 +2,14 @@ from datetime import datetime, timedelta
 import sqlite3
 import json
 from .DoubanHelper import DoubanHelper
-from .subtitles import SubtitleService
+from .subtitles import SubtitleService, SubtitleError
+from .automation import SubtitleAutomation
+from fastapi import Body, File, UploadFile
+from .tool_install import install_tool
+from fastapi.responses import FileResponse
+from app.helper.directory import DirectoryHelper
+from app.chain.media import MediaChain
+from app.schemas.types import MediaSource, MediaType
 from enum import Enum
 
 import pytz
@@ -28,11 +35,11 @@ class ZvideoHelper(_PluginBase):
     # 插件名称
     plugin_name = "极影视助手"
     # 插件描述
-    plugin_desc = "极影视字幕搜索、豆瓣观影状态同步与评分管理"
+    plugin_desc = "定时补全中文字幕、网页授权、手动字幕搜索下载与豆瓣同步"
     # 插件图标
     plugin_icon = "zvideo.png"
     # 插件版本
-    plugin_version = "1.8.0"
+    plugin_version = "1.9.0"
     # 插件作者
     plugin_author = "DzAvril"
     # 作者主页
@@ -66,6 +73,7 @@ class ZvideoHelper(_PluginBase):
         # 停止现有任务
         self.stop_service()
         self._subtitle_enabled = (config or {}).get("subtitle_enabled", True)
+        self._subtitle_config = {k:v for k,v in (config or {}).items() if k.startswith("subtitle_")}
         self._subtitle_service = SubtitleService(self.get_data_path() / "subtitle-cli")
 
         if config:
@@ -81,6 +89,13 @@ class ZvideoHelper(_PluginBase):
             self._douban_score_update_days = int(config.get("douban_score_update_days") or 0)
             if self._sync_douban_status or self._use_douban_score:
                 self._douban_helper = DoubanHelper(user_cookie=self._cookie)
+
+        try:
+            roots = [d.library_path for d in DirectoryHelper().get_local_library_dirs() if d.media_type in ("电影", "电视剧", None, "")]
+        except Exception:
+            roots = []
+        self._subtitle_automation = SubtitleAutomation(self.get_data_path(), self._subtitle_service, roots, self._subtitle_config,
+            notice=lambda text:self.systemmessage.put(text, title="极影视字幕授权"), language_resolver=self.subtitle_original_language)
 
         # 获取历史数据
         self._cached_data = (
@@ -143,6 +158,7 @@ class ZvideoHelper(_PluginBase):
                 "clean_cache": self._clean_cache,
                 "use_douban_score": self._use_douban_score,
                 "douban_score_update_days": self._douban_score_update_days,
+                **self._subtitle_config,
                 "subtitle_enabled": self._subtitle_enabled,
             }
         )
@@ -231,45 +247,92 @@ class ZvideoHelper(_PluginBase):
                             )
 
     def get_api(self) -> List[Dict[str, Any]]:
-        return [
-            {"path": "/subtitle_status", "endpoint": self.subtitle_status, "methods": ["GET"],
-             "auth": "bear", "summary": "极影视字幕授权状态"},
-            {"path": "/subtitle_search", "endpoint": self.subtitle_search, "methods": ["GET"],
-             "auth": "bear", "summary": "搜索极影视字幕"},
-        ]
+        routes = [("subtitle_status", self.subtitle_status, "GET"), ("subtitle_search", self.subtitle_search, "GET"),
+            ("subtitle_preview", self.subtitle_preview, "POST"), ("subtitle_download", self.subtitle_download, "POST"),
+            ("subtitle_file", self.subtitle_file, "GET"), ("subtitle_library", self.subtitle_library, "GET"),
+            ("subtitle_scan", self.subtitle_scan, "POST"), ("subtitle_auth_start", self.subtitle_auth_start, "POST"),
+            ("subtitle_auth_state", self.subtitle_auth_state, "GET"), ("subtitle_tool_install", self.subtitle_tool_install, "POST"), ("subtitle_auth_submit", self.subtitle_auth_submit, "POST")]
+        return [{"path":"/"+name, "endpoint":endpoint, "methods":[method], "auth":"bear", "summary":"极影视字幕"} for name,endpoint,method in routes]
 
     def subtitle_status(self):
         return {"success": True, "enabled": self._subtitle_enabled, **self._subtitle_service.status()}
 
     def subtitle_search(self, keyword: str = "", imdb_id: str = ""):
-        if not self._subtitle_enabled:
-            return {"success": False, "message": "请先在插件设置中开启字幕搜索"}
+        if not self._subtitle_enabled:return {"success":False, "message":"请先开启字幕功能"}
         return self._subtitle_service.search(keyword, imdb_id)
+
+    def subtitle_preview(self, payload: dict = Body(...)):
+        if not self._subtitle_enabled:return {"success":False, "message":"请先开启字幕功能"}
+        return self._subtitle_service.preview(str(payload.get("id") or ""))
+
+    def subtitle_download(self, payload: dict = Body(...)):
+        if not self._subtitle_enabled:return {"success":False, "message":"请先开启字幕功能"}
+        return self._subtitle_automation.manual_download(str(payload.get("file_id") or ""), str(payload.get("media_id") or ""))
+
+    def subtitle_file(self, ticket: str = ""):
+        if not self._subtitle_enabled:return {"success":False, "message":"请先开启字幕功能"}
+        try:
+            path, name = self._subtitle_service.download_file(ticket)
+            return FileResponse(path, filename=name, media_type="application/octet-stream", headers={"Cache-Control":"no-store"})
+        except SubtitleError as error:return {"success":False, "message":str(error)}
+
+    def subtitle_library(self):
+        return self._subtitle_automation.snapshot()
+
+    def subtitle_scan(self, payload: dict = Body(...)):
+        if not self._subtitle_enabled:return {"success":False, "message":"请先开启字幕功能"}
+        return self._subtitle_automation.start(download=payload.get("download") is True, keyword=payload.get("keyword", ""))
+
+    async def subtitle_tool_install(self, file: UploadFile = File(...)):
+        if not self._subtitle_service._lock.acquire(blocking=False):return {"success":False,"message":"字幕服务正忙"}
+        try:
+            content = await file.read(8 * 1024 * 1024 + 1)
+            return install_tool(self._subtitle_service.root, content)
+        except OSError:return {"success":False,"message":"工具导入失败，请检查插件数据目录权限"}
+        finally:self._subtitle_service._lock.release();await file.close()
+
+    def subtitle_auth_start(self):
+        if not self._subtitle_enabled:return {"success":False, "message":"请先开启字幕功能"}
+        if self._subtitle_automation.progress['running']:return {"success":False, "message":"请等待当前媒体检查结束"}
+        if not self._subtitle_service._lock.acquire(blocking=False):return {"success":False, "message":"字幕服务正忙，请稍后重试"}
+        try:return self._subtitle_service.authorization.start()
+        finally:self._subtitle_service._lock.release()
+
+    def subtitle_auth_state(self):
+        result = self._subtitle_service.authorization.state()
+        if result['state'] == 'complete':
+            self._subtitle_service.auth_failed = False
+            self._subtitle_service._cache.clear()
+        return {"success":True, **result}
+
+    def subtitle_auth_submit(self, payload: dict = Body(...)):
+        # Authorization code stays in the POST body and the private terminal pipe.
+        return self._subtitle_service.authorization.submit(payload.get("session", ""), payload.get("code", ""))
+
+    @staticmethod
+    def subtitle_original_language(metadata):
+        if not metadata.get('tmdb_id'):return ''
+        media = MediaChain().recognize_media(media_source=MediaSource.TMDB, media_id=metadata['tmdb_id'],
+            mtype=MediaType.TV if metadata.get('season') is not None else MediaType.MOVIE)
+        return getattr(media, 'original_language', '') if media else ''
+
+    def subtitle_scheduled_job(self):
+        if self._subtitle_enabled and self._subtitle_config.get("subtitle_auto"):
+            self._subtitle_automation.start(download=True)
 
     def get_render_mode(self):
         return "vue", "dist/assets"
 
     def get_service(self) -> List[Dict[str, Any]]:
-        """
-        注册插件公共服务
-        [{
-            "id": "服务ID",
-            "name": "服务名称",
-            "trigger": "触发器：cron/interval/date/CronTrigger.from_crontab()",
-            "func": self.xxx,
-            "kwargs": {} # 定时器参数
-        }]
-        """
+        services = []
         if self._enabled and self._cron:
-            return [
-                {
-                    "id": "ZvideoHelper",
-                    "name": "极影视助手",
-                    "trigger": CronTrigger.from_crontab(self._cron),
-                    "func": self.do_job,
-                    "kwargs": {},
-                }
-            ]
+            services.append({"id":"ZvideoHelper", "name":"极影视助手", "trigger":CronTrigger.from_crontab(self._cron), "func":self.do_job, "kwargs":{}})
+        if self._subtitle_enabled and self._subtitle_config.get("subtitle_auto"):
+            try:
+                trigger = CronTrigger.from_crontab(self._subtitle_config.get("subtitle_cron") or "*/30 * * * *")
+                services.append({"id":"ZvideoHelperSubtitles", "name":"极影视中文字幕补全", "trigger":trigger, "func":self.subtitle_scheduled_job, "kwargs":{}})
+            except ValueError:logger.warning("极影视字幕执行周期无效，请检查插件设置")
+        return services
 
     def do_job(self):
         self._should_stop = False
@@ -872,6 +935,8 @@ class ZvideoHelper(_PluginBase):
         退出插件
         """
         self._should_stop = True
+        if getattr(self, "_subtitle_automation", None):self._subtitle_automation.stop()
+        if getattr(self, "_subtitle_service", None):self._subtitle_service.authorization.close()
         try:
             if self._scheduler:
                 self._scheduler.remove_all_jobs()

@@ -5,11 +5,15 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+import sys
+import types
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3] / "plugins.v3/zvideohelper"
-spec = importlib.util.spec_from_file_location("zvideo_subtitles", ROOT / "subtitles.py")
+package = types.ModuleType("zvideo_test");package.__path__ = [str(ROOT)];sys.modules["zvideo_test"] = package
+spec = importlib.util.spec_from_file_location("zvideo_test.subtitles", ROOT / "subtitles.py")
 subtitles = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = subtitles
 spec.loader.exec_module(subtitles)
 spec = importlib.util.spec_from_file_location("zvideo_subtitle_cli", ROOT / "subtitle_cli.py")
 transport = importlib.util.module_from_spec(spec)

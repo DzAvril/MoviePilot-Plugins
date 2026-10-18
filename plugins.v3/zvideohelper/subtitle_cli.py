@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""One read-only subtitle search extension for the source-less ZSpace CLI.
+"""Public read-only search plus a closed, private plugin subtitle protocol.
 
-The original executable alone handles Keychain access, OAuth refresh and JSON
-redaction. A private, temporary LAN relay translates exactly one read-only
-request. It never exports credentials or changes the user's active profile.
+The native CLI alone owns OAuth. A loopback relay maps a single donor request
+onto search, archive preview, or a download into plugin-controlled staging.
+Provider locators enter the private protocol on stdin, never command arguments.
 """
 
 import argparse
@@ -106,7 +106,7 @@ class NoRedirects(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def make_handler(upstream, query, timeout, route_log):
+def make_handler(upstream, query, timeout, route_log, operation_path=SEARCH_PATH, operation_params=None):
     class RelayHandler(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass  # Request paths, headers and bodies must never enter logs.
@@ -134,7 +134,9 @@ def make_handler(upstream, query, timeout, route_log):
                     values = urllib.parse.parse_qs(body.decode("utf-8"), strict_parsing=True)
                     if values != {"q": [query]}:
                         raise ValueError()
-                    target = SEARCH_PATH
+                    target = operation_path
+                    if operation_params is not None:
+                        body = urllib.parse.urlencode(operation_params).encode()
                 elif path.query:
                     target += "?" + path.query
             except (ValueError, UnicodeError):
@@ -166,8 +168,8 @@ def make_handler(upstream, query, timeout, route_log):
 
 
 @contextlib.contextmanager
-def relay(upstream, query, timeout, route_log):
-    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(upstream, query, timeout, route_log))
+def relay(upstream, query, timeout, route_log, operation_path=SEARCH_PATH, operation_params=None):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(upstream, query, timeout, route_log, operation_path, operation_params))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -240,15 +242,15 @@ def dedicated_search(binary, options):
         upstream = validate_upstream(transport.get("base_url", ""))
         route_log = []
         try:
-            with relay(upstream, options.query, options.timeout, route_log) as local_url:
+            with relay(upstream, options.query, options.timeout, route_log, getattr(options, "operation_path", SEARCH_PATH), getattr(options, "operation_params", None)) as local_url:
                 code, result = cli_json(base + ["--host", local_url, "--mode", "lan", "raw", "POST", TRANSPORT_PATH, "--params", json.dumps({"q": options.query}, ensure_ascii=False)], options.timeout * 3 + 25)
         finally:
             reset_code, reset = cli_json(base + ["--clear-host", "--mode", "auto", "status"], 15)
             if reset_code or not reset.get("ok"):
                 raise ExtensionError("E_IO", "字幕授权环境连接配置恢复失败，请重新检查授权状态")
-        if code == 0 and result.get("ok") and not any(item["path"] == SEARCH_PATH for item in route_log):
+        if code == 0 and result.get("ok") and not any(item["path"] == getattr(options, "operation_path", SEARCH_PATH) for item in route_log):
             raise ExtensionError("E_API", "未观察到实际字幕搜索请求")
-        result["extension"] = {"name": "subtitle-search", "read_only": True, "transport": "native-cli-oauth-lan", "requests": route_log}
+        result["extension"] = {"name": "subtitle-search" if getattr(options,"operation_path",SEARCH_PATH) == SEARCH_PATH else "nas-subtitle", "read_only": getattr(options,"operation_path",SEARCH_PATH) != "/subs/v2/downloadsub", "transport": "native-cli-oauth-lan", "requests": route_log}
         return code, result
 
 
@@ -275,7 +277,27 @@ def main():
         raise ExtensionError("E_INSTALL", "缺少原 CLI 程序路径")
     binary = str(Path(sys.argv[2]).resolve())
     args = sys.argv[3:]
-    options = parse_search(args)
+    if args[:1] == ["nas-subtitle-request"]:
+        # Private plugin protocol. Provider locators arrive on stdin, never argv.
+        operations = {"search": (SEARCH_PATH, {"q"}), "preview": ("/subs/v2/preview", {"sub_id", "download_url"}),
+                      "download": ("/subs/v2/downloadsub", {"sub_id", "download_url", "sub_title", "file_name", "encrypted_path", "from"})}
+        if len(args) != 2 or args[1] not in operations:
+            raise ExtensionError("E_POLICY", "不支持的字幕操作")
+        path, fields = operations[args[1]]
+        try:
+            params = json.loads(sys.stdin.read(65537))
+        except ValueError:
+            raise ExtensionError("E_PARAM", "字幕请求无效") from None
+        if not isinstance(params, dict) or set(params) != fields or any(not isinstance(v, str) or len(v) > 8192 for v in params.values()):
+            raise ExtensionError("E_POLICY", "字幕参数无效")
+        if args[1] != "search" and (not params["sub_id"] or not params["download_url"].startswith("https://")):
+            raise ExtensionError("E_POLICY", "字幕来源无效")
+        if args[1] == "download" and (Path(params["sub_title"]).suffix.lower() not in {".srt", ".ass", ".ssa", ".vtt"} or params["encrypted_path"]):
+            raise ExtensionError("E_POLICY", "仅支持文本字幕")
+        options = argparse.Namespace(dedicated_profile=True, profile="zvideohelper", timeout=35, query="zvideohelper", summary=False,
+                                     operation_path=path, operation_params=params)
+    else:
+        options = parse_search(args)
     if options is None:
         os.execv(binary, [binary] + args)
     code, result = search(binary, options)

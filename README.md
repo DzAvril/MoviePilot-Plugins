@@ -1,8 +1,8 @@
 # MoviePilot-Plugins
 
-## 极影视助手字幕搜索
+## 极影视助手字幕补全
 
-[极影视助手](./plugins.v3/zvideohelper/README.md)：V3 增加 NAS 独立授权的字幕搜索页，支持 IMDb 与片名回退、结果筛选和分页，保留现有豆瓣同步与评分管理。
+[极影视助手](./plugins.v3/zvideohelper/README.md)：V3 支持网页授权、按 TMDB 原始语言排除中文作品、定时补全缺少的中文字幕，以及 NAS 同级目录和当前设备两种下载，保留豆瓣同步与评分管理。
 
 ## V3 音乐歌单同步
 

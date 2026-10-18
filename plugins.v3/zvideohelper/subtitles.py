@@ -1,4 +1,4 @@
-"""Search-only NAS adapter. Credentials and refresh stay owned by the native CLI."""
+"""NAS subtitle adapter. Only the original CLI owns OAuth credentials."""
 
 import hashlib
 from html import unescape
@@ -10,6 +10,11 @@ import subprocess
 import sys
 import threading
 import time
+import secrets
+import tempfile
+
+from .library import TEXT, chinese_text, chinese_label, decode_text
+from .authorization import BrowserAuthorization
 
 
 class SubtitleError(Exception):
@@ -63,8 +68,12 @@ class SubtitleService:
         self._run_override = run
         self._lock = threading.Lock()
         self._cache = {}
+        self._sources = {}
+        self._downloads = {}
+        self.authorization = BrowserAuthorization(self.root)
+        self.auth_failed = False
 
-    def _run(self, args, timeout=150):
+    def _run(self, args, timeout=150, payload=None):
         if self._run_override:
             return self._run_override(args)
         native = self.root / "zspace-cli"
@@ -72,7 +81,7 @@ class SubtitleService:
             raise SubtitleError("NAS 字幕授权工具尚未安装，请先完成插件初始化")
         env = dict(os.environ, ZSPACE_CLI_HOME=str(self.root / "profile"))
         try:
-            result = subprocess.run(args, capture_output=True, timeout=timeout, env=env)
+            result = subprocess.run(args, input=json.dumps(payload, ensure_ascii=False).encode() if payload is not None else None, capture_output=True, timeout=timeout, env=env)
             document = json.loads(result.stdout if result.returncode == 0 else result.stderr)
         except subprocess.TimeoutExpired:
             raise SubtitleError("字幕搜索超时，请稍后重试") from None
@@ -80,9 +89,12 @@ class SubtitleService:
             raise SubtitleError("字幕授权工具暂不可用，请检查 NAS 授权状态") from None
         if not isinstance(document, dict) or result.returncode or not document.get("ok"):
             code = document.get("error", {}).get("code", "") if isinstance(document, dict) else ""
-            if code in {"E_NOT_LOGGED_IN", "E_OAUTH", "E_CREDENTIAL"}:
-                raise SubtitleError("请先在 NAS 终端完成极空间授权，再刷新授权状态")
+            if code in {"E_NOT_LOGGED_IN", "E_OAUTH", "E_CREDENTIAL", "E_AUTH"} or any(s in str(document.get("error", {}).get("message", "")) for s in ("N001208", "token失效", "invalid_grant", "401")):
+                self.auth_failed = True
+                raise SubtitleError("授权已失效，请在插件页面重新授权；自动下载已暂停")
             raise SubtitleError("字幕服务请求失败，请检查 NAS 授权和网络连接后重试")
+        if "status" not in args:
+            self.auth_failed = False
         return document
 
     def status(self):
@@ -92,12 +104,14 @@ class SubtitleService:
         try:
             result = self._run([str(native), "--profile", "zvideohelper", "status"], timeout=20)
             authorized = bool(result.get("data", {}).get("logged_in"))
-            return {"installed": True, "authorized": authorized,
-                    "message": "NAS 已授权，可搜索字幕" if authorized else "首次使用请先在 NAS 终端完成极空间授权"}
+            return {"installed": True, "authorized": authorized and not self.auth_failed,
+                    "message": "NAS 已授权，临期自动续期" if authorized and not self.auth_failed else "请在插件页面完成极空间授权"}
         except SubtitleError as error:
             return {"installed": True, "authorized": False, "message": str(error)}
 
     def search(self, keyword="", imdb_id=""):
+        if self.authorization.active():
+            return {"success":False, "message":"正在进行授权，请完成后重试"}
         try:
             queries = query_plan(keyword, imdb_id)
         except SubtitleError as error:
@@ -115,7 +129,9 @@ class SubtitleService:
                     "--original-bin", str(self.root / "zspace-cli"), "--profile", "zvideohelper", "--timeout", "25",
                     "media", "subtitle-search", "--dedicated-profile", "--params", json.dumps({"q": query}, ensure_ascii=False)])
                 attempts.append(query)
-                candidates = project_candidates(result.get("data", {}))
+                data = result.get("data", {})
+                candidates = project_candidates(data)
+                self._remember(data, candidates)
                 if candidates:
                     break
             response = {"success": True, "count": len(candidates), "candidates": candidates,
@@ -129,3 +145,100 @@ class SubtitleService:
             return {"success": False, "message": str(error)}
         finally:
             self._lock.release()
+
+
+    def _remember(self, data, candidates):
+        lookup = {(str(i.get("sub_id") or ""), unescape(str(i.get("sub_title") or ""))): (i, g)
+                  for g in data.get("subs", []) if isinstance(g, dict) for i in g.get("subs", []) if isinstance(i, dict)}
+        now = time.monotonic()
+        self._sources = {k:v for k,v in self._sources.items() if now - v[0] < 900}
+        if len(self._sources) > 1000:self._sources.clear()
+        for c in candidates:
+            item, group = lookup[(c["subtitle_id"], c["title"])]
+            self._sources[c["id"]] = (now, {"sub_id":str(item["sub_id"]), "download_url":item.get("download_url", ""),
+                "sub_title":c["title"], "imdb_id":str(group.get("imdb") or ""), "movie":str(group.get("name") or "")})
+
+    def _source(self, identifier):
+        entry = self._sources.get(identifier)
+        if not entry or time.monotonic() - entry[0] >= 900:
+            raise SubtitleError("搜索结果已过期，请重新搜索")
+        return entry[1]
+
+    def _request(self, operation, params):
+        if self.authorization.active():raise SubtitleError("正在授权，请完成后重试")
+        return self._run([sys.executable, str(Path(__file__).with_name("subtitle_cli.py")), "--original-bin", str(self.root / "zspace-cli"),
+                          "nas-subtitle-request", operation], payload=params).get("data", {})
+
+    def preview(self, identifier):
+        if not self._lock.acquire(blocking=False):return {"success":False, "message":"字幕服务正忙，请稍后重试"}
+        try:
+            source = self._source(identifier)
+            if Path(source["sub_title"]).suffix.lower() in TEXT:
+                names = [source["sub_title"]]
+            else:
+                data = self._request("preview", {k:source[k] for k in ("sub_id", "download_url")})
+                names = [i["sub_title"] for i in data.get("subs", []) if isinstance(i, dict) and isinstance(i.get("sub_title"), str) and Path(i["sub_title"]).suffix.lower() in TEXT]
+            files = []
+            for name in names[:300]:
+                key = secrets.token_urlsafe(20)
+                self._sources[key] = (time.monotonic(), {**source, "sub_title":name})
+                files.append({"id":key, "title":name, "chinese_label":chinese_label(name)})
+            return {"success":True, "files":files, "message":"" if files else "压缩包中没有支持的 SRT / ASS / SSA / VTT 文本字幕"}
+        except SubtitleError as error:return {"success":False, "message":str(error)}
+        finally:self._lock.release()
+
+    def _nas_stage(self, path, override=""):
+        """Translate only our staging directory, using the kernel bind mount map."""
+        if not Path(path).is_relative_to(self.root / 'staging'):
+            raise SubtitleError('字幕缓存路径超出插件 staging 目录')
+        if override:
+            base = str(override).rstrip('/')
+            if not base.startswith('/') or '..' in Path(base).parts:raise SubtitleError("NAS 缓存路径无效")
+            return base + '/' + str(Path(path).relative_to(self.root / 'staging'))
+        try:
+            mappings = []
+            for line in Path('/proc/self/mountinfo').read_text().splitlines():
+                before, after = line.split(' - ', 1);parts = before.split();fs = after.split()[0]
+                decode = lambda value: re.sub(r'\\([0-7]{3})', lambda m: chr(int(m[1], 8)), value)
+                mount, root = Path(decode(parts[4])), decode(parts[3])
+                if fs == 'zfuse.zfsv3' and Path(path).is_relative_to(mount):
+                    mappings.append((len(str(mount)), '/tmp/zfsv3' + root.rstrip('/') + '/' + str(Path(path).relative_to(mount))))
+            if mappings:return max(mappings)[1]
+        except (OSError, ValueError, IndexError):pass
+        raise SubtitleError("无法自动识别 NAS 缓存位置，请在设置中填写插件 staging 目录在 NAS 上的路径")
+
+    def fetch(self, identifier, nas_cache=""):
+        if not self._lock.acquire(blocking=False):raise SubtitleError("字幕服务正忙，请稍后重试")
+        try:
+            source = self._source(identifier)
+            suffix = Path(source['sub_title']).suffix.lower()
+            if suffix not in TEXT:raise SubtitleError("请先选择压缩包内的文本字幕")
+            staging = self.root / 'staging';staging.mkdir(parents=True, exist_ok=True, mode=0o700)
+            # Stale temporary files are ours, not media or credentials.
+            for old in staging.iterdir():
+                if old.is_dir() and re.fullmatch(r'[0-9a-f]{32}', old.name) and time.time() - old.stat().st_mtime > 86400:
+                    import shutil
+                    shutil.rmtree(old)
+            import uuid
+            folder = staging / uuid.uuid4().hex;folder.mkdir(mode=0o700)
+            placeholder = folder / 'video.mkv';placeholder.touch(mode=0o600)
+            nas_path = self._nas_stage(placeholder, nas_cache)
+            self._request('download', {k:source[k] for k in ('sub_id','download_url','sub_title')} | {'file_name':nas_path, 'encrypted_path':'', 'from':''})
+            files = [p for p in folder.iterdir() if p.is_file() and not p.is_symlink() and p.suffix.lower() == suffix]
+            if len(files) != 1 or not 16 <= files[0].stat().st_size <= 8 * 1024 * 1024:
+                raise SubtitleError("字幕未写入插件缓存，或大小超出限制")
+            data = files[0].read_bytes()
+            if b'<!doctype html' in data[:1000].lower() or b'<html' in data[:1000].lower():raise SubtitleError("下载返回了网页，未保存到媒体库")
+            decoded = decode_text(data)
+            if decoded is None or not re.search(r'(?:\d{1,2}:)?\d{2}:\d{2}[.,]\d{1,3}', decoded):
+                raise SubtitleError("下载内容不是可识别的文本字幕，未保存到媒体库")
+            ticket = secrets.token_urlsafe(24)
+            self._downloads = {k:v for k,v in self._downloads.items() if time.monotonic() - v[0] < 900}
+            self._downloads[ticket] = (time.monotonic(), files[0], Path(source['sub_title']).name)
+            return {'ticket':ticket, 'path':files[0], 'name':Path(source['sub_title']).name, 'chinese':chinese_text(data, suffix)}
+        finally:self._lock.release()
+
+    def download_file(self, ticket):
+        entry = self._downloads.get(ticket)
+        if not entry or time.monotonic() - entry[0] >= 900 or not entry[1].is_file():raise SubtitleError("下载链接已过期，请重新下载")
+        return entry[1], entry[2]
