@@ -24,7 +24,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: python -m pip install pytest apscheduler
+      - run: python -m pip install pytest apscheduler qbittorrent-api==2026.6.0
       - run: python -m compileall -q plugins.v3/cleaninvalidseed
       - run: python .github/scripts/check_plugin_versions.py package.v3.json
       - name: Check scoped federation assets
@@ -82,4 +82,4 @@ jobs:
           fi
           gh release create "$tag" "cleaninvalidseed_v${PLUGIN_VERSION}.zip" \
             --target "$COMMIT_SHA" --title "清理无效做种 ${PLUGIN_VERSION}" \
-            --notes 'MoviePilot V3 做种复核工作台：修复下载器离线、跨下载器及路径误判，增加持续观察、真实做种时长、回读确认和可恢复源文件回收区。升级默认只预览，保留原周期、映射与排除规则。'
+            --notes '修复父目录任务的源文件保护、真实 qBittorrent Tracker 读取、静置天数迁移及失效下载器取消选择；回收意图在重命名前持久化，失败与启动后核对源和目标身份。升级默认只预览，源文件移动始终需手动确认。'

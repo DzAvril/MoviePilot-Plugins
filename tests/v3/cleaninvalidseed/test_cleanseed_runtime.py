@@ -1,9 +1,13 @@
 from copy import deepcopy
+import json
 from types import SimpleNamespace
 import threading
 import time
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from qbittorrentapi import Client, TorrentDictionary, TrackersList
+import requests
 
 from conftest import core, raw_task
 
@@ -246,4 +250,224 @@ def test_conflicting_source_mapping_does_not_hide_task_results_or_scan_source_fi
     assert plugin.clean_invalid_seed(preview=True)["success"]
     report = plugin._state["report"]
     assert report["warnings"] and all(row["kind"] == "torrent" for row in report["rows"])
+    assert not qb.calls
+
+
+def test_real_qb_dictionary_reads_trackers_explicitly_and_failed_reads_stop_actions(runtime, monkeypatch):
+    plugin, qb, *_ = setup(runtime, monkeypatch)
+    calls = []
+    evidence = {row['hash']: row['trackers'] for row in qb.rows}
+    def trackers(*, torrent_hash):
+        calls.append(torrent_hash)
+        return TrackersList(evidence[torrent_hash], client)
+    client = SimpleNamespace(torrents_trackers=trackers)
+    rich = [TorrentDictionary({k: v for k, v in row.items() if k != 'trackers'}, client) for row in qb.rows]
+    qb.get_torrents = lambda ids=None: (rich, False)
+    assert plugin.clean_invalid_seed(preview=True)['success']
+    assert calls == [row['hash'] for row in qb.rows]
+    assert {row['status'] for row in plugin._state['report']['rows']} == {'healthy', 'candidate'}
+    def unavailable(**kwargs):
+        raise RuntimeError('https://tracker.example/secret?passkey=private')
+    client.torrents_trackers = unavailable
+    result = plugin.clean_invalid_seed(preview=True)
+    assert not result['success'] and not plugin._state['observations'] and not qb.calls
+    assert 'private' not in str(plugin.page_data()['last_error'])
+
+
+def test_real_qb_client_builds_info_and_tracker_containers_from_http_responses(runtime, monkeypatch):
+    plugin, qb, *_ = setup(runtime, monkeypatch)
+    evidence = {row['hash']: row['trackers'] for row in qb.rows}
+    calls = []
+    def send(session, request, **kwargs):
+        path = urlsplit(request.url).path
+        calls.append(path)
+        response = requests.Response()
+        response.status_code, response.url = 200, request.url
+        response.headers['Content-Type'] = 'application/json'
+        if path == '/api/v2/torrents/info':
+            data = [{k: v for k, v in row.items() if k != 'trackers'} for row in qb.rows]
+        elif path == '/api/v2/torrents/trackers':
+            body = request.body.decode() if isinstance(request.body, bytes) else request.body
+            data = evidence[parse_qs(body)['hash'][0]]
+        else:
+            raise AssertionError(f'Unexpected request: {path}')
+        response._content = json.dumps(data).encode()
+        return response
+    monkeypatch.setattr(requests.Session, 'send', send)
+    client = Client(host='http://127.0.0.1:65535', FORCE_SCHEME_FROM_HOST=True)
+    assert isinstance(client.torrents_info()[0], TorrentDictionary)
+    calls.clear()
+    qb.get_torrents = lambda ids=None: (client.torrents_info(), False)
+    assert plugin.clean_invalid_seed(preview=True)['success']
+    assert {row['status'] for row in plugin._state['report']['rows']} == {'healthy', 'candidate'}
+    assert calls.count('/api/v2/torrents/info') == 1
+    assert calls.count('/api/v2/torrents/trackers') == len(qb.rows)
+    assert not qb.calls
+
+
+def test_real_empty_tracker_container_keeps_task_unknown_without_failing_inventory(runtime, monkeypatch):
+    plugin, qb, *_ = setup(runtime, monkeypatch)
+    client = SimpleNamespace(torrents_trackers=lambda **kwargs: TrackersList([], client))
+    rich = [TorrentDictionary({k: v for k, v in row.items() if k != 'trackers'}, client) for row in qb.rows]
+    qb.get_torrents = lambda ids=None: (rich, False)
+    result = plugin.clean_invalid_seed(preview=True)
+    assert result['success']
+    assert {row['status'] for row in plugin._state['report']['rows']} == {'unknown'}
+    tasks, _, _ = plugin._inventory(plugin._config, plugin._stop)
+    assert all(task['paths'] for task in tasks)
+    assert not plugin._state['observations'] and not qb.calls
+
+
+@pytest.mark.parametrize('response', [None, '', '[]', b'[]', bytearray(b'[]'), {}, {'trackers': []}])
+def test_invalid_tracker_response_clears_evidence_and_never_performs_configured_actions(runtime, monkeypatch, response):
+    plugin, qb, *_ = setup(runtime, monkeypatch, action='remove')
+    evidence = {row['hash']: row['trackers'] for row in qb.rows}
+    client = SimpleNamespace(torrents_trackers=lambda *, torrent_hash: TrackersList(evidence[torrent_hash], client))
+    rich = [TorrentDictionary({k: v for k, v in row.items() if k != 'trackers'}, client) for row in qb.rows]
+    qb.get_torrents = lambda ids=None: (rich, False)
+    row = ready(plugin, monkeypatch, runtime)
+    client.torrents_trackers = lambda **kwargs: response
+    result = plugin.clean_invalid_seed()
+    assert not result['success'] and not plugin._state['observations'] and not qb.calls
+    assert not plugin.execute(request(plugin, runtime, row))['success']
+
+
+@pytest.mark.parametrize('empty', [False, True])
+def test_tr_only_source_scan_accepts_real_trackers_from_unselected_qb(runtime, monkeypatch, tmp_path, empty):
+    root = (tmp_path / 'sources').resolve(); root.mkdir()
+    (root / 'Used').mkdir(); (root / 'Used' / 'keep.mkv').write_bytes(b'keep')
+    plugin, qb, configs, services = setup(runtime, monkeypatch, downloaders=['TR'],
+                                         detect_invalid_files=True, download_dirs=f'{root}:/downloads/movie')
+    client = SimpleNamespace(torrents_trackers=lambda **kwargs: TrackersList([] if empty else qb.rows[0]['trackers'], client))
+    rich = [TorrentDictionary({**{k: v for k, v in row.items() if k != 'trackers'},
+                              'content_path': '/downloads/movie/Used'}, client) for row in qb.rows]
+    qb.get_torrents = lambda ids=None: (rich, False)
+    raw = SimpleNamespace(hash_string='c' * 40, name='Used', status='seeding', download_dir='/downloads/movie',
+                          added_date='2020-01-01', percent_done=1, seconds_seeding=900000, total_size=100,
+                          labels=[], error=0, tracker_stats=[SimpleNamespace(announce='https://tracker.example/announce',
+                          has_announced=True, last_announce_succeeded=True, last_announce_result='Success')],
+                          get_files=lambda: [SimpleNamespace(name='Used/keep.mkv')])
+    services['TR'] = SimpleNamespace(type='transmission', instance=SimpleNamespace(_trarg=[], trc=SimpleNamespace(get_torrents=lambda **kwargs: [raw])))
+    configs['TR'] = SimpleNamespace(type='transmission', enabled=True)
+    assert plugin.clean_invalid_seed(preview=True)['success']
+    report = plugin._state['report']
+    assert {service['name'] for service in report['services']} == {'QB', 'TR'}
+    assert len(report['rows']) == 1 and report['rows'][0]['service'] == 'TR' and not report['warnings']
+    assert (root / 'Used' / 'keep.mkv').read_bytes() == b'keep' and not qb.calls
+
+
+@pytest.mark.parametrize('days', [0, 5, 30])
+def test_host_form_merge_keeps_migrated_file_age(runtime, monkeypatch, days):
+    stored = {'downloaders': ['QB'], 'min_seeding_days': days}
+    plugin, *_ = setup(runtime, monkeypatch, **stored)
+    _, defaults = plugin.get_form()
+    host_initial = {**defaults, **stored}
+    assert core.config_values(host_initial)['file_min_age_days'] == max(1, days)
+
+
+def ready_source(runtime, monkeypatch, tmp_path):
+    plugin, qb, *_ = setup(runtime, monkeypatch, detect_invalid_files=True)
+    root = (tmp_path / 'sources').resolve(); root.mkdir()
+    used = root / 'Used'; used.mkdir(); (used / 'a.mkv').write_bytes(b'keep')
+    orphan = root / 'Orphan'; orphan.mkdir(); (orphan / 'b.mkv').write_bytes(b'recover')
+    plugin._config['download_dirs'] = f'{root}:/downloads/movie'
+    for task in qb.rows:
+        task['content_path'] = '/downloads/movie/Used'
+    now = time.time() + 20 * 86400
+    monkeypatch.setattr(runtime.time, 'time', lambda: now - 7200)
+    assert plugin.clean_invalid_seed(preview=True)['success']
+    monkeypatch.setattr(runtime.time, 'time', lambda: now)
+    assert plugin.clean_invalid_seed(preview=True)['success']
+    row = next(row for row in plugin._state['report']['rows'] if row['kind'] == 'file')
+    assert row['ready']
+    return plugin, qb, root, orphan, row
+
+
+def test_failed_trash_preflight_does_not_leak_capacity_and_can_be_retried(runtime, monkeypatch, tmp_path):
+    plugin, qb, root, orphan, row = ready_source(runtime, monkeypatch, tmp_path)
+    outside = tmp_path / 'outside'; outside.mkdir()
+    trash = root / '.cleaninvalidseed-trash'; trash.symlink_to(outside)
+    payload = request(plugin, runtime, row, 'quarantine')
+    result = plugin.execute(payload)
+    assert result['results'][0]['status'] == 'skipped' and orphan.exists()
+    assert not plugin._state['trash'] and not list(outside.iterdir())
+    trash.unlink()
+    result = plugin.execute(payload)
+    assert result['results'][0]['status'] == 'success' and not orphan.exists()
+    entry = next(iter(plugin._state['trash'].values()))
+    assert plugin.restore({'id': entry['id']})['success']
+    assert (orphan / 'b.mkv').read_bytes() == b'recover' and not qb.calls
+
+
+@pytest.mark.parametrize('state', ['unmoved', 'moved', 'changed'])
+def test_startup_reconciles_only_provable_pending_moves(runtime, monkeypatch, tmp_path, state):
+    plugin, qb, root, orphan, row = ready_source(runtime, monkeypatch, tmp_path)
+    entry = {**row, 'id': 'pending', 'status': 'intent', 'at': time.time(),
+             'trash_path': str(root / '.cleaninvalidseed-trash' / 'pending')}
+    plugin._state['trash'][entry['id']] = entry
+    if state == 'moved':
+        runtime.move_to_trash(row, entry['id'])
+    elif state == 'changed':
+        orphan.rename(root / 'previous-source')
+        orphan.mkdir()
+    plugin._persist()
+    plugin.init_plugin(deepcopy(plugin._config))
+    if state == 'unmoved':
+        assert not plugin._state['trash'] and orphan.exists()
+    elif state == 'moved':
+        assert plugin._state['trash']['pending']['status'] == 'quarantined'
+        assert plugin.restore({'id': 'pending'})['success']
+        assert (orphan / 'b.mkv').read_bytes() == b'recover'
+    else:
+        assert plugin._state['trash']['pending']['status'] == 'intent'
+    assert not qb.calls
+
+
+@pytest.mark.parametrize('failure', ['rename', 'sync'])
+def test_move_failures_reconcile_the_persisted_intent_against_actual_locations(runtime, monkeypatch, tmp_path, failure):
+    plugin, qb, root, orphan, row = ready_source(runtime, monkeypatch, tmp_path)
+    payload = request(plugin, runtime, row, 'quarantine')
+    def unavailable(*args):
+        raise PermissionError('denied')
+    with monkeypatch.context() as patch:
+        if failure == 'rename':
+            patch.setitem(runtime.move_to_trash.__globals__, '_move_no_replace', unavailable)
+        else:
+            patch.setattr(runtime.move_to_trash.__globals__['os'], 'fsync', unavailable)
+        result = plugin.execute(payload)
+    if failure == 'rename':
+        assert result['results'][0]['status'] == 'skipped' and orphan.exists()
+        assert not plugin._state['trash']
+        assert plugin.execute(payload)['results'][0]['status'] == 'success'
+    else:
+        assert result['results'][0]['status'] == 'success' and not orphan.exists()
+    entry = next(iter(plugin._state['trash'].values()))
+    assert entry['status'] == 'quarantined'
+    assert plugin.restore({'id': entry['id']})['success']
+    assert (orphan / 'b.mkv').read_bytes() == b'recover' and not qb.calls
+
+
+def test_pending_intent_is_not_reconciled_while_another_operation_holds_the_lock(runtime, monkeypatch, tmp_path):
+    plugin, _, root, orphan, row = ready_source(runtime, monkeypatch, tmp_path)
+    plugin._state['trash']['pending'] = {**row, 'id': 'pending', 'status': 'intent', 'at': time.time(),
+                                       'trash_path': str(root / '.cleaninvalidseed-trash' / 'pending')}
+    plugin._persist()
+    runtime.OPERATION_LOCK.acquire()
+    try:
+        plugin.init_plugin(deepcopy(plugin._config))
+        assert plugin._state['trash']['pending']['status'] == 'intent'
+    finally:
+        runtime.OPERATION_LOCK.release()
+    assert plugin.restore({'id': 'pending'})['success']
+    assert not plugin._state['trash'] and (orphan / 'b.mkv').read_bytes() == b'recover'
+
+
+def test_reselecting_a_downloader_repairs_task_scans_without_bypassing_source_protection(runtime, monkeypatch):
+    plugin, qb, configs, services = setup(runtime, monkeypatch, downloaders=['Missing', 'QB'])
+    configs['Retired'] = SimpleNamespace(type='qbittorrent', enabled=False)
+    assert not plugin.clean_invalid_seed(preview=True)['success']
+    plugin.init_plugin({'downloaders': ['QB']})
+    assert plugin.clean_invalid_seed(preview=True)['success']
+    plugin.init_plugin({'downloaders': ['QB'], 'detect_invalid_files': True})
+    assert not plugin.clean_invalid_seed(preview=True)['success']
     assert not qb.calls

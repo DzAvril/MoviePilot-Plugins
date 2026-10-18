@@ -5,6 +5,7 @@ import threading
 import time
 import uuid
 from collections import Counter
+from collections.abc import Sequence
 from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
@@ -18,7 +19,7 @@ from app.schemas import NotificationType
 
 from .core import (DEFAULTS, TRANSIENT, classify, config_values, digest, lines, observe,
                    parse_mappings, safe_message, task_record, value)
-from .files import TRASH, inspect_sources, move_to_trash, restore_entry
+from .files import TRASH, inspect_sources, move_to_trash, reconcile_entry, restore_entry
 
 OPERATION_LOCK = threading.Lock()
 CONFIRMATIONS = {"tag": "标记选中任务", "remove": "移除任务并保留文件", "quarantine": "移入回收区"}
@@ -32,7 +33,7 @@ class CleanInvalidSeed(_PluginBase):
     plugin_name = "清理无效做种"
     plugin_desc = "复核失效种子、保护跨下载器做种，源文件清理可预览、可恢复。"
     plugin_icon = "https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/a06b2f2a7916a9e492fdf5b0a25e30a38ca28127/icons/CleanInvalidSeed-3.0.2.png"
-    plugin_version = "3.0.2"
+    plugin_version = "3.0.3"
     plugin_author = "DzAvril"
     author_url = "https://github.com/DzAvril"
     plugin_config_prefix = "cleaninvalidseed"
@@ -57,6 +58,12 @@ class CleanInvalidSeed(_PluginBase):
         self._state = self.get_data(self.DATA_KEY) or {"observations": {}, "history": [], "trash": {}}
         self._state.setdefault("trash", {})
         self._state.setdefault("history", [])
+        if any(entry.get("status") == "intent" for entry in self._state["trash"].values()):
+            try:
+                with self._operation():
+                    self._reconcile_trash()
+            except BusyError:
+                pass
         if self._config.get("onlyonce"):
             self._config["onlyonce"] = False
             self.update_config(self._config)
@@ -127,8 +134,17 @@ class CleanInvalidSeed(_PluginBase):
                 if torrents is None:
                     raise ValueError()
                 for torrent in torrents:
+                    if stop.is_set():
+                        raise ValueError("检测已停止")
                     files = torrent.get_files() if service.type == "transmission" else None
-                    tasks.append(task_record(torrent, service.type, name, files=files))
+                    trackers = None
+                    if service.type == "qbittorrent":
+                        # TorrentDictionary is a dict, but .trackers performs a separate RPC.
+                        trackers = getattr(torrent, "trackers", value(torrent, "trackers", default=[]))
+                        if not isinstance(trackers, Sequence) or isinstance(trackers, (str, bytes, bytearray)):
+                            raise ValueError("Tracker 清单读取不完整")
+                        trackers = list(trackers)
+                    tasks.append(task_record(torrent, service.type, name, files=files, trackers=trackers))
                 available[name] = {"name": name, "type": service.type, "count": len(torrents)}
             except Exception:
                 # Native client errors may contain tracker passkeys and service credentials.
@@ -218,9 +234,25 @@ class CleanInvalidSeed(_PluginBase):
         self._persist()
         return event
 
+    def _reconcile_trash(self):
+        resolved = {}
+        for entry_id, entry in list(self._state["trash"].items()):
+            if entry.get("status") != "intent":
+                continue
+            outcome = reconcile_entry(entry)
+            if outcome == "unmoved":
+                del self._state["trash"][entry_id]
+                resolved[entry_id] = self._audit(entry, "quarantine", "skipped", "确认源文件仍在原位，已清理未执行的回收记录", entry_id)
+            elif outcome == "quarantined":
+                entry["status"] = "quarantined"
+                resolved[entry_id] = self._audit(entry, "quarantine", "success", "已核对文件位于回收区，可恢复原位", entry_id)
+        return resolved
+
     def _execute(self, report, ids, action, config, stop):
         if not ids or len(ids) > config["max_actions"]:
             raise ValueError(f"每批请选择 1–{config['max_actions']} 项")
+        if action == "quarantine":
+            self._reconcile_trash()
         old = {row["id"]: row for row in report["rows"]}
         outcomes = []
         for row_id in dict.fromkeys(ids):
@@ -245,9 +277,10 @@ class CleanInvalidSeed(_PluginBase):
                         raise ValueError("回收区记录已达上限，请先处理已有条目")
                     entry = {**row, "id": entry_id, "at": time.time(), "status": "intent",
                              "trash_path": str(Path(row["root"]) / TRASH / entry_id)}
-                    self._state["trash"][entry_id] = entry
-                    self._persist()
-                    move_to_trash(row, entry_id, stopped=stop.is_set)
+                    def persist_intent():
+                        self._state["trash"][entry_id] = entry
+                        self._persist()
+                    move_to_trash(row, entry_id, stopped=stop.is_set, before_move=persist_intent)
                     entry["status"] = "quarantined"
                 else:
                     client = services[row["service"]].instance
@@ -274,7 +307,13 @@ class CleanInvalidSeed(_PluginBase):
                 outcomes.append(self._audit(row, action, "success", CONFIRMATIONS[action], entry_id))
             except Exception as error:
                 message = str(error) if isinstance(error, ValueError) else "操作结果待核对，保留源文件；请查看下载器或回收区"
-                outcomes.append(self._audit(row, action, "uncertain", message, entry_id))
+                status = "uncertain"
+                if action == "quarantine" and entry_id not in self._state["trash"]:
+                    status, message = "skipped", "未执行移动，请检查源目录及回收区后重试"
+                event = self._audit(row, action, status, message, entry_id)
+                if action == "quarantine":
+                    event = self._reconcile_trash().get(entry_id, event)
+                outcomes.append(event)
         return {"success": True, "results": outcomes}
 
     def execute(self, payload: dict):
@@ -300,6 +339,10 @@ class CleanInvalidSeed(_PluginBase):
                 entry = self._state["trash"].get(payload.get("id"))
                 if not entry or entry["status"] not in ("quarantined", "intent"):
                     raise ValueError("未找到可恢复的回收区条目")
+                if entry["status"] == "intent":
+                    self._reconcile_trash()
+                    if entry["id"] not in self._state["trash"]:
+                        return {"success": True, "message": "源文件仍在原位，已清理未执行的回收记录"}
                 restore_entry(entry, stopped=stop.is_set)
                 entry["status"] = "restored"
                 self._audit(entry, "restore", "success", "已恢复到原位置")
@@ -372,4 +415,4 @@ class CleanInvalidSeed(_PluginBase):
                        {"title": "只预览", "value": "preview"}, {"title": "标记任务", "value": "tag"},
                        {"title": "移除任务并保留文件", "value": "remove"}]}}]
         content.extend({"component": component, "props": {"model": key, "label": label}} for component, key, label in fields)
-        return [{"component": "VForm", "content": content}], dict(DEFAULTS)
+        return [{"component": "VForm", "content": content}], deepcopy(self._config)
