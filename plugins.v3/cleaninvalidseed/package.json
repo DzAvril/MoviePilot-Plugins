@@ -1,0 +1,6 @@
+{
+  "name": "moviepilot-clean-invalid-seed-ui",
+  "private": true,
+  "type": "module",
+  "scripts": {"build": "node frontend/build.mjs", "check": "node --check frontend/view.js && node --check frontend/remoteEntry.js"}
+}
