@@ -34,12 +34,13 @@
   "CleanInvalidSeed": {
     "name": "清理无效做种",
     "description": "持续复核失效种子，保护跨下载器做种；源文件清理可预览、可恢复。",
-    "version": "3.0.1",
+    "version": "3.0.2",
     "author": "DzAvril",
     "level": 1,
     "system_version": ">=3.1.6,<4",
-    "icon": "clean_a.png",
+    "icon": "https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/a06b2f2a7916a9e492fdf5b0a25e30a38ca28127/icons/CleanInvalidSeed-3.0.2.png",
     "history": {
+      "v3.0.2": "更换蓝绿色循环复核图标，统一插件列表、复核工作台和设置页的图标展示。",
       "v3.0.1": "补齐旧配置空值兼容、累计做种字段单位、轻量状态刷新和无覆盖恢复；通过 Linux 回收恢复与真实大规模任务预览验证。",
       "v3.0.0": "独立 V3 复核工作台；修复读取失败和路径误判，增加持续观察、真实累计做种保护、跨下载器检查、回读确认、操作记录及可恢复的源文件回收区。升级默认只预览。"
     },

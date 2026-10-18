@@ -31,8 +31,8 @@ class BusyError(ValueError):
 class CleanInvalidSeed(_PluginBase):
     plugin_name = "清理无效做种"
     plugin_desc = "复核失效种子、保护跨下载器做种，源文件清理可预览、可恢复。"
-    plugin_icon = "clean_a.png"
-    plugin_version = "3.0.1"
+    plugin_icon = "https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/a06b2f2a7916a9e492fdf5b0a25e30a38ca28127/icons/CleanInvalidSeed-3.0.2.png"
+    plugin_version = "3.0.2"
     plugin_author = "DzAvril"
     author_url = "https://github.com/DzAvril"
     plugin_config_prefix = "cleaninvalidseed"

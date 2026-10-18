@@ -1,3 +1,4 @@
+const PLUGIN_ICON = `/api/v1/system/img/1?imgurl=${encodeURIComponent('https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/a06b2f2a7916a9e492fdf5b0a25e30a38ca28127/icons/CleanInvalidSeed-3.0.2.png')}&cache=true`;
 const STATUS = {healthy: '正常', candidate: '待复核', protected: '已保护', warning: '需检查', unknown: '信息不足', processed: '已处理'};
 const ACTION = {tag: '标记选中任务', remove: '移除任务并保留文件', quarantine: '移入回收区', restore: '恢复原位'};
 const RESULT = {success: '已确认', skipped: '已跳过', uncertain: '需核对', intent: '待核对'};
@@ -37,7 +38,7 @@ function elements(Vue) {
   const button = (label, onClick, options = {}) => h('button', {type: 'button', class: `cis-btn ${options.primary ? 'cis-primary' : ''} ${options.danger ? 'cis-danger' : ''}`, onClick, disabled: options.disabled, 'aria-label': label}, [options.icon && icon(options.icon, 17), label]);
   const badge = (text, status = '') => h('span', {class: `cis-badge cis-${status}`}, text);
   const date = time => time ? new Date(time * 1000).toLocaleString('zh-CN', {month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false}) : '尚未检测';
-  const header = (title, detail, actions) => h('header', {class: 'cis-header'}, [h('div', {class: 'cis-brand'}, [h('div', {class: 'cis-logo'}, icon('shield', 30)), h('div', [h('div', {class: 'cis-eyebrow'}, 'SEEDING · CARE'), h('h2', title), h('p', detail)])]), h('div', {class: 'cis-actions'}, actions)]);
+  const header = (title, detail, actions) => h('header', {class: 'cis-header'}, [h('div', {class: 'cis-brand'}, [h('img', {class: 'cis-logo', src: PLUGIN_ICON, alt: '清理无效做种图标', width: 64, height: 64}), h('div', [h('div', {class: 'cis-eyebrow'}, 'SEEDING · CARE'), h('h2', title), h('p', detail)])]), h('div', {class: 'cis-actions'}, actions)]);
   const section = (title, detail, content) => h('section', {class: 'cis-panel'}, [h('div', {class: 'cis-section-title'}, [h('h3', title), detail && h('p', detail)]), ...content]);
   const select = (label, value, options, change) => h('select', {'aria-label': label, value, onChange: e => change(e.target.value)}, options.map(([key, text]) => h('option', {value: key}, text)));
   return {icon, button, badge, date, header, section, select};
