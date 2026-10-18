@@ -172,3 +172,5 @@ date-*
 runtime-*
 # V3 playlist-sync regression tests
 !tests/v3/qqmusicplaylistsync/test_*
+# V3 invalid-seed review regression tests
+!tests/v3/cleaninvalidseed/test_*
