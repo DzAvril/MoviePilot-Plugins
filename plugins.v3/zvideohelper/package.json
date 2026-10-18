@@ -1,0 +1,1 @@
+{"name":"moviepilot-zvideohelper-ui","private":true,"type":"module","scripts":{"build":"node frontend/build.mjs"}}

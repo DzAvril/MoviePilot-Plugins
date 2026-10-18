@@ -1,5 +1,9 @@
 # MoviePilot-Plugins
 
+## 极影视助手字幕搜索
+
+[极影视助手](./plugins.v3/zvideohelper/README.md)：V3 增加 NAS 独立授权的字幕搜索页，支持 IMDb 与片名回退、结果筛选和分页，保留现有豆瓣同步与评分管理。
+
 ## V3 音乐歌单同步
 
 [音乐歌单同步](./plugins.v3/qqmusicplaylistsync/README.md)：持续同步多个 QQ、网易云公开歌单，新增歌曲立即搜索；保持单曲订阅，从分轨专辑只选所需歌曲，下载和入库状态实时联动。适用于 MoviePilot 3.1.6 及以上 V3 版本。

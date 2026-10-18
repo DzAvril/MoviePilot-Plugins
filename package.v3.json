@@ -30,5 +30,19 @@
     },
     "release": true,
     "labels": "音乐,歌单,QQ音乐,网易云"
+  },
+  "ZvideoHelper": {
+    "name": "极影视助手",
+    "description": "极影视字幕搜索、豆瓣观影状态同步与评分管理",
+    "version": "1.8.0",
+    "author": "DzAvril",
+    "level": 1,
+    "system_version": ">=3.1.6,<4",
+    "icon": "zvideo.png",
+    "release": true,
+    "labels": "媒体库,字幕,极影视",
+    "history": {
+      "v1.8.0": "增加 NAS 独立授权的字幕搜索页，支持 IMDb 与片名回退、结果筛选和分页，保留观影状态与评分功能。"
+    }
   }
 }
