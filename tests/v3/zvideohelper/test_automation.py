@@ -59,6 +59,44 @@ class LibraryTests(unittest.TestCase):
 
 
 class MatchingAndWriteTests(unittest.TestCase):
+    def test_name_scope_applies_before_status_counts_and_pagination(self):
+        with tempfile.TemporaryDirectory() as folder:
+            worker=automation.SubtitleAutomation(folder,None,[],{})
+            # The requested show falls outside the old 200-record history cap.
+            worker.data['items']={str(n):{'id':str(n),'title':'Other','path':f'/Other/{n}.mkv','state':'unknown','checked_at':500+n} for n in range(240)}
+            for n in range(8):
+                worker.data['items']['show'+str(n)]={'id':'show'+str(n),'title':'现在不是出轨的问题','path':f'/Show/S01E{n+1:02}.mkv','state':'present' if n<6 else 'unknown','checked_at':n}
+            scoped=worker.snapshot('现在不是出轨的问题',page_size=3)
+            self.assertEqual((scoped['scoped_total'],scoped['total'],scoped['counts']['present'],scoped['counts']['unknown']),(8,8,6,2))
+            self.assertEqual(scoped['pages'],3)
+            self.assertTrue(all(i['title']=='现在不是出轨的问题' for i in scoped['items']))
+            filtered=worker.snapshot('现在不是出轨的问题','unknown',99,3)
+            self.assertEqual((filtered['page'],filtered['total'],len(filtered['items'])),(1,2,2))
+            self.assertEqual(filtered['counts'],scoped['counts'])
+            self.assertEqual(worker.snapshot('不存在的片名')['total'],0)
+            self.assertEqual(worker.snapshot()['total'],248)
+
+    def test_scoped_check_preserves_other_history_and_reports_its_own_task(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=(Path(folder)/'library').resolve();root.mkdir()
+            for name in ['Wanted.S01E01.strm','Wanted.S01E02.strm','Other.strm']:(root/name).touch()
+            worker=automation.SubtitleAutomation(Path(folder)/'state',None,[root],{'subtitle_batch':1})
+            other=root/'Other.strm';key=library.media_key(other)
+            worker.data['items'][key]={'id':key,'title':'Other','path':str(other),'state':'present','checked_at':1}
+            self.assertTrue(worker.start(keyword='Wanted')['success']);worker._thread.join(5)
+            snapshot=worker.snapshot('Wanted')
+            self.assertFalse(snapshot['running'])
+            self.assertEqual((snapshot['task']['keyword'],snapshot['task']['matched'],snapshot['task']['planned'],snapshot['task']['checked']),('Wanted',2,1,1))
+            self.assertEqual(snapshot['total'],1)
+            self.assertEqual(worker.data['items'][key]['state'],'present')
+
+    def test_nas_destinations_only_include_selected_identity_and_episode(self):
+        with tempfile.TemporaryDirectory() as folder:
+            worker=automation.SubtitleAutomation(folder,None,[],{})
+            worker.data['items']={str(n):{'path':str(n),'tmdb_id':str(identifier),'season':season,'episode':episode} for n,(identifier,season,episode) in enumerate([(1,1,1),(1,1,2),(1,2,1),(2,1,1),(1,None,None)])}
+            self.assertEqual([i['path'] for i in worker.destinations('1','tv',1,1)['items']],['0'])
+            self.assertEqual([i['path'] for i in worker.destinations('1','movie')['items']],['4'])
+
     def test_wrong_movie_episode_and_edition_are_rejected(self):
         m={'title':'Show','imdb_id':'tt1111111','year':'2020','season':1,'episode':3}
         score=lambda name,imdb='tt1111111':automation.match_score(m,'Show.S01E03.mkv',name,'Show',imdb)

@@ -12,6 +12,7 @@ from app.helper.directory import DirectoryHelper
 from app.chain.media import MediaChain
 from app.domain.metainfo import MetaInfo
 from app.modules.themoviedb.tmdbapi import TmdbApi
+from app.sdk.network import SecurityUtils
 from itertools import zip_longest
 from app.schemas.types import MediaSource, MediaType
 from enum import Enum
@@ -43,7 +44,7 @@ class ZvideoHelper(_PluginBase):
     # 插件图标
     plugin_icon = "zvideo.png"
     # 插件版本
-    plugin_version = "1.9.2"
+    plugin_version = "1.10.0"
     # 插件作者
     plugin_author = "DzAvril"
     # 作者主页
@@ -255,7 +256,7 @@ class ZvideoHelper(_PluginBase):
         routes = [("subtitle_series", self.subtitle_series, "GET"), ("subtitle_media_search", self.subtitle_media_search, "GET"), ("subtitle_selected", self.subtitle_selected, "POST"), ("subtitle_status", self.subtitle_status, "GET"), ("subtitle_search", self.subtitle_search, "GET"),
             ("subtitle_preview", self.subtitle_preview, "POST"), ("subtitle_download", self.subtitle_download, "POST"),
             ("subtitle_file", self.subtitle_file, "GET"), ("subtitle_library", self.subtitle_library, "GET"),
-            ("subtitle_scan", self.subtitle_scan, "POST"), ("subtitle_auth_start", self.subtitle_auth_start, "POST"),
+            ("subtitle_scan", self.subtitle_scan, "POST"), ("subtitle_destinations", self.subtitle_destinations, "GET"), ("subtitle_auth_start", self.subtitle_auth_start, "POST"),
             ("subtitle_auth_state", self.subtitle_auth_state, "GET"), ("subtitle_tool_install", self.subtitle_tool_install, "POST"), ("subtitle_auth_submit", self.subtitle_auth_submit, "POST")]
         return [{"path":"/"+name, "endpoint":endpoint, "methods":[method], "auth":"bear", "summary":"极影视字幕"} for name,endpoint,method in routes]
 
@@ -276,7 +277,7 @@ class ZvideoHelper(_PluginBase):
                 meta = MetaInfo(keyword);meta.type = kind
                 groups.append(chain.search_medias(meta=meta, media_source=MediaSource.TMDB) or [])
             records = [item for row in zip_longest(*groups) for item in row if item is not None]
-            items = [item for item in project_media_choices(records) if media_type == 'all' or item['media_type'] == media_type]
+            items = [item for item in project_media_choices(records,SecurityUtils.sign_url) if media_type == 'all' or item['media_type'] == media_type]
             return {"success":True, "items":items, "count":len(items),
                 "message":"" if items else "未找到作品，可尝试原名或加上年份再搜索"}
         except Exception:
@@ -290,7 +291,7 @@ class ZvideoHelper(_PluginBase):
         if cached and time.monotonic()-cached[0]<600:return cached[1]
         try:
             details = MediaChain().recognize_media(media_source=MediaSource.TMDB, media_id=tmdb_id, mtype=MediaType.TV)
-            media = project_media(details) if details else None
+            media = project_media(details,SecurityUtils.sign_url) if details else None
             if not media or media['id']!=tmdb_id or media['media_type']!='tv':return {"success":False,"message":"无法读取该剧资料，请稍后重试"}
             seasons = project_seasons(details)
             if not seasons:return {"success":False,"message":"TMDB 尚未提供该剧季集资料"}
@@ -314,7 +315,7 @@ class ZvideoHelper(_PluginBase):
         try:
             details = MediaChain().recognize_media(media_source=MediaSource.TMDB, media_id=identifier,
                 mtype=MediaType.MOVIE if kind == 'movie' else MediaType.TV)
-            media = project_media(details) if details else None
+            media = project_media(details,SecurityUtils.sign_url) if details else None
         except Exception:media = None
         if not media or media['id'] != identifier or media['media_type'] != kind:
             return {"success":False, "message":"无法读取所选作品资料，请重新选择或稍后重试"}
@@ -345,8 +346,13 @@ class ZvideoHelper(_PluginBase):
             return FileResponse(path, filename=name, media_type="application/octet-stream", headers={"Cache-Control":"no-store"})
         except SubtitleError as error:return {"success":False, "message":str(error)}
 
-    def subtitle_library(self):
-        return self._subtitle_automation.snapshot()
+    def subtitle_library(self, keyword: str = '', state: str = 'all', page: int = 1, page_size: int = 20):
+        return self._subtitle_automation.snapshot(keyword,state,page,page_size)
+
+    def subtitle_destinations(self, tmdb_id: str = '', media_type: str = '', season: int = -1, episode: int = -1):
+        if not tmdb_id.isascii() or not tmdb_id.isdigit() or len(tmdb_id)>12 or media_type not in {'movie','tv'} or not -1<=season<=999 or not -1<=episode<=9999:
+            return {'success':False,'message':'请先选择影视作品和季集'}
+        return self._subtitle_automation.destinations(tmdb_id,media_type,season,episode)
 
     def subtitle_scan(self, payload: dict = Body(...)):
         if not self._subtitle_enabled:return {"success":False, "message":"请先开启字幕功能"}

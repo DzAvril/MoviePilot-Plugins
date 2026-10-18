@@ -10,7 +10,7 @@ def validate_lookup(keyword, media_type='all'):
     return keyword.strip()
 
 
-def project_media(record):
+def project_media(record, image_url=None):
     get = record.get if isinstance(record, dict) else lambda key, default=None:getattr(record,key,default)
     source = get('media_source')
     if getattr(source, 'value', source) not in {None, '', 'themoviedb', 'tmdb'}:return None
@@ -20,16 +20,20 @@ def project_media(record):
     title = str(get('title') or '').strip()
     if not kind or not re.fullmatch(r'[1-9]\d{0,11}',identifier) or not title:return None
     year = str(get('year') or '')
-    return {'id':identifier, 'media_type':kind, 'title':title,
+    poster = str(get('poster_path') or get('poster_url') or '')
+    if re.fullmatch(r'/[A-Za-z0-9_-]+\.(?:jpg|png|webp)',poster):poster = 'https://image.tmdb.org/t/p/w342'+poster
+    if not re.fullmatch(r'https://image\.tmdb\.org/t/p/(?:w\d+|original)/[A-Za-z0-9_-]+\.(?:jpg|png|webp)',poster):poster = ''
+    if poster:poster = re.sub(r'/t/p/(?:w\d+|original)/','/t/p/w342/',poster)
+    return {'id':identifier, 'media_type':kind, 'title':title, 'poster_url':image_url(poster) if poster and image_url else poster,
         'original_title':str(get('original_title') or get('original_name') or ''),
         'year':year if re.fullmatch(r'\d{4}',year) else '',
         'overview':str(get('overview') or '')[:240], 'imdb_id':str(get('imdb_id') or '')}
 
 
-def project_media_choices(records):
+def project_media_choices(records, image_url=None):
     choices, seen = [], set()
     for record in records:
-        item = project_media(record)
+        item = project_media(record,image_url)
         if not item or (item['media_type'],item['id']) in seen:continue
         seen.add((item['media_type'],item['id']));choices.append(item)
     return choices

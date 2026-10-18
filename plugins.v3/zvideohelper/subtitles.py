@@ -55,7 +55,7 @@ def project_candidates(data):
                 continue
             seen.add(key)
             suffix = Path(title).suffix.lower().lstrip(".")
-            candidates.append({"id": key, "subtitle_id": subtitle_id, "title": title,
+            candidates.append({"id": key, "subtitle_id": subtitle_id, "title": title, "chinese_label":chinese_label(title),
                 "movie": str(group.get("name") or ""), "imdb_id": str(group.get("imdb") or ""),
                 "size": str(item.get("size") or ""),
                 "format": suffix.upper() if suffix in {"ass", "ssa", "srt", "vtt", "zip", "rar", "7z", "sup", "idx", "sub"} else "未标注",
@@ -193,6 +193,7 @@ class SubtitleService:
                     seen.add(identity)
                     source.update(episode_season=season,episode_number=episode,episode_parent=candidate['title'])
                     matched.append({**candidate,'id':file['id'],'title':file['title'],
+                        'chinese_label':file['chinese_label'],
                         'format':Path(file['title']).suffix.lstrip('.').upper(),'archive_title':candidate['title']})
             result = {**response,'candidates':matched,'count':len(matched),'season':season,'episode':episode,
                 'checked_archives':checked,'archive_warning':f'{failed} 个字幕包未能完成核对，未混入结果；可再次查询重试' if failed else '',

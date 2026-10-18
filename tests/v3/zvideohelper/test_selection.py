@@ -10,6 +10,17 @@ def group(name, imdb, sub_id, title):
 
 
 class FilmSelectionTests(unittest.TestCase):
+    def test_posters_use_tmdb_images_and_native_image_authorization(self):
+        media={'tmdb_id':1,'title':'Film','type':'电影','poster_path':'/test.jpg'}
+        calls=[]
+        def sign(url):calls.append(url);return 'authorized-image'
+        self.assertEqual(selection.project_media(media,sign)['poster_url'],'authorized-image')
+        self.assertEqual(calls,['https://image.tmdb.org/t/p/w342/test.jpg'])
+        selection.project_media({**media,'poster_path':'https://image.tmdb.org/t/p/original/full.jpg'},sign)
+        self.assertEqual(calls[-1],'https://image.tmdb.org/t/p/w342/full.jpg')
+        for poster in ('http://127.0.0.1/private.jpg','https://example.com/test.jpg','/../private.jpg'):
+            self.assertEqual(selection.project_media({**media,'poster_path':poster},sign)['poster_url'],'')
+
     def test_choices_distinguish_movie_and_tv_with_same_id_and_hide_unneeded_data(self):
         records=[{'tmdb_id':348,'title':'异形','type':'电影','year':'1979','imdb_id':'tt0078748','secret':'synthetic-private'},
             {'tmdb_id':348,'title':'同名剧集','type':'电视剧','year':'2025'},

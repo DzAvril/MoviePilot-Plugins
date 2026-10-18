@@ -2,219 +2,300 @@ function unwrap(response) {
   return response?.data?.success !== undefined ? response.data : response;
 }
 
+const STATES = {all:'全部记录',missing:'缺少中文',present:'已有中文',unknown:'待确认',excluded:'中文原声'};
+const PATHS = {
+  film:'M4 3h16v18H4zM4 8h16M4 16h16M8 3v18M16 3v18',
+  search:'m21 21-5-5M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z',
+  library:'M4 4h6v16H4zM14 4l6-1 3 16-6 1z',
+  check:'m5 12 4 4L19 6',arrow:'m9 5 7 7-7 7',
+  download:'M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5',
+};
+
+export function createPoster(Vue) {
+  const {defineComponent,h,ref} = Vue;
+  return defineComponent({props:{media:Object},setup(props) {
+    const failed = ref('');
+    return () => h('div',{class:'zvh-poster'},[
+      h('span',{'aria-hidden':'true'},props.media.media_type==='tv'?'剧集':'电影'),
+      props.media.poster_url && failed.value!==props.media.poster_url && h('img',{
+        key:props.media.poster_url,src:`/api/v1/system/img/0?imgurl=${encodeURIComponent(props.media.poster_url)}&cache=true`,
+        alt:`《${props.media.title}》海报`,loading:'lazy',decoding:'async',referrerpolicy:'no-referrer',
+        onError:()=>{failed.value=props.media.poster_url;},
+      }),
+    ]);
+  }});
+}
+
 export function createPage(Vue) {
-  const {defineComponent, h, ref, computed, onMounted, onUnmounted} = Vue;
+  const {defineComponent,h,ref,computed,onMounted,onUnmounted} = Vue;
+  const Poster = createPoster(Vue);
   return defineComponent({
-    name: 'ZvideoSubtitlePage', props: {api: Object, pluginId: String}, emits: ['layout', 'switch', 'close'],
-    setup(props, {emit}) {
-      const scanKeyword = ref('');
-      const keyword = ref(''), mediaType = ref('all'), choices = ref(null), selectedMedia = ref(null), choicePage = ref(1), filter = ref(''), page = ref(1);
-      const series = ref(null), seasonNo = ref(''), episodeNo = ref(''), busyMessage = ref('');
-      const status = ref(null), result = ref(null), busy = ref(false), error = ref(''), message = ref('');
-      const library = ref(null), auth = ref(null), code = ref(''), files = ref(null), selectedFile = ref(''), destination = ref('');
-      const toolFile = ref(null);
-      const working = ref(false), listFilter = ref('missing');
-      let timer = null, polling = false, disposed = false;
+    name:'ZvideoSubtitlePage',props:{api:Object,pluginId:String},emits:['layout','switch','close'],
+    setup(props,{emit}) {
+      const tab = ref('library'),scanKeyword = ref(''),libraryQuery = ref(''),listFilter = ref('all'),libraryPage = ref(1),libraryBusy = ref(false);
+      const keyword = ref(''),mediaType = ref('all'),choices = ref(null),selectedMedia = ref(null),choicePage = ref(1),filter = ref(''),page = ref(1),chineseOnly = ref(false);
+      const series = ref(null),seasonNo = ref(''),episodeNo = ref(''),busyMessage = ref('');
+      const status = ref(null),result = ref(null),busy = ref(false),error = ref(''),message = ref('');
+      const library = ref(null),auth = ref(null),code = ref(''),files = ref(null),selectedFile = ref(''),destination = ref(''),saveMode = ref('device'),targets = ref([]),targetMessage = ref('');
+      const toolFile = ref(null),working = ref(false);
+      let timer = null,polling = false,disposed = false,libraryRequest = 0;
       const endpoint = name => `plugin/${props.pluginId}/${name}`;
-      const get = async (name, options) => unwrap(await props.api.get(endpoint(name), options));
-      const post = async (name, payload = {}) => {
-        const response = unwrap(await props.api.post(endpoint(name), payload, {timeout:180000}));
+      const get = async (name,options) => unwrap(await props.api.get(endpoint(name),options));
+      const post = async (name,payload={}) => {
+        const response = unwrap(await props.api.post(endpoint(name),payload,{timeout:180000}));
         if (!response?.success) throw new Error(response?.message || '操作失败，请稍后重试');
         return response;
       };
-      const rows = computed(() => (result.value?.candidates || []).filter(item => item.title.toLowerCase().includes(filter.value.trim().toLowerCase())));
-      const pages = computed(() => Math.max(1, Math.ceil(rows.value.length / 10)));
-      const visible = computed(() => rows.value.slice((Math.min(page.value,pages.value)-1)*10, Math.min(page.value,pages.value)*10));
-      const choicePages = computed(() => Math.max(1,Math.ceil((choices.value?.items.length || 0)/8)));
-      const visibleChoices = computed(() => (choices.value?.items || []).slice((choicePage.value-1)*8,choicePage.value*8));
-      const media = computed(() => (library.value?.items || []).filter(i => listFilter.value === 'all' || i.state === listFilter.value));
+      const rows = computed(()=>(result.value?.candidates || []).filter(item=>item.title.toLowerCase().includes(filter.value.trim().toLowerCase()) && (!chineseOnly.value || item.chinese_label)));
+      const pages = computed(()=>Math.max(1,Math.ceil(rows.value.length/10)));
+      const visible = computed(()=>rows.value.slice((Math.min(page.value,pages.value)-1)*10,Math.min(page.value,pages.value)*10));
+      const choicePages = computed(()=>Math.max(1,Math.ceil((choices.value?.items.length || 0)/8)));
+      const visibleChoices = computed(()=>(choices.value?.items || []).slice((choicePage.value-1)*8,choicePage.value*8));
+      const scope = computed(()=>libraryQuery.value ? `“${libraryQuery.value}”` : '全部本地影视');
+      const date = timestamp => timestamp ? new Date(timestamp*1000).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}) : '尚未检查';
+      const episodeLabel = item => item.season!=null ? `第 ${item.season} 季 · 第 ${item.episode} 集` : `电影${item.year?' · '+item.year:''}`;
+      const loadLibrary = async () => {
+        const request = ++libraryRequest;libraryBusy.value = true;
+        try {
+          const response = await get('subtitle_library',{params:{keyword:libraryQuery.value,state:listFilter.value,page:libraryPage.value,page_size:12}});
+          if (!response?.success) throw new Error(response?.message || '无法读取检查记录');
+          if (request===libraryRequest && !disposed) {library.value=response;libraryPage.value=response.page;}
+        } finally {if (request===libraryRequest) libraryBusy.value=false;}
+      };
       const loadStatus = async () => {
-        try {status.value = await get('subtitle_status');library.value = await get('subtitle_library');}
-        catch {error.value = '无法读取插件状态，请稍后刷新';}
+        try {status.value=await get('subtitle_status');await loadLibrary();}
+        catch {error.value='无法读取插件状态，请稍后刷新';}
       };
       const act = async fn => {
         if (working.value) return;
-        working.value = true;error.value = '';message.value = '';
-        try {await fn();} catch (caught) {error.value = caught.message || '操作失败，请稍后重试';}
-        finally {working.value = false;}
+        working.value=true;error.value='';message.value='';
+        try {await fn();} catch(caught) {error.value=caught.message || '操作失败，请稍后重试';}
+        finally {working.value=false;}
       };
+      const applyLibraryFilter = (clear=false) => act(async()=>{
+        if (clear) {scanKeyword.value='';listFilter.value='all';}
+        libraryQuery.value=scanKeyword.value.trim();libraryPage.value=1;await loadLibrary();
+      });
+      const changeLibraryState = value => act(async()=>{libraryQuery.value=scanKeyword.value.trim();listFilter.value=value;libraryPage.value=1;await loadLibrary();});
+      const turnLibraryPage = value => act(async()=>{libraryPage.value=value;await loadLibrary();});
+      const scan = download => act(async()=>{
+        libraryQuery.value=scanKeyword.value.trim();libraryPage.value=1;listFilter.value='all';
+        message.value=(await post('subtitle_scan',{download,keyword:libraryQuery.value})).message;await loadLibrary();
+      });
       const resetManual = () => {
-        choices.value = null;selectedMedia.value = null;result.value = null;files.value = null;
-        series.value = null;seasonNo.value = '';episodeNo.value = '';
-        destination.value = '';page.value = 1;choicePage.value = 1;filter.value = '';error.value = '';message.value = '';
+        choices.value=null;selectedMedia.value=null;result.value=null;files.value=null;series.value=null;seasonNo.value='';episodeNo.value='';
+        destination.value='';targets.value=[];page.value=1;choicePage.value=1;filter.value='';chineseOnly.value=false;error.value='';message.value='';
       };
       const findMedia = async () => {
         if (busy.value || working.value) return;
-        resetManual();
-        if (!keyword.value.trim()) {error.value = '请输入影视名称';return;}
-        busy.value = true;
+        resetManual();if (!keyword.value.trim()) {error.value='请输入影视名称';return;}
+        busy.value=true;busyMessage.value='正在查找影视…';
         try {
-          const response = await get('subtitle_media_search',{params:{keyword:keyword.value.trim(),media_type:mediaType.value},timeout:90000});
-          if (!response?.success) throw new Error(response?.message || '影视查询失败');choices.value = response;
-        } catch (caught) {error.value = caught.message || '影视查询失败';}
-        finally {busy.value = false;}
+          const response=await get('subtitle_media_search',{params:{keyword:keyword.value.trim(),media_type:mediaType.value},timeout:90000});
+          if (!response?.success) throw new Error(response?.message || '影视查询失败');choices.value=response;
+        } catch(caught) {error.value=caught.message || '影视查询失败';}
+        finally {busy.value=false;busyMessage.value='';}
       };
-      const clearEpisodeResults = () => {result.value = null;files.value = null;destination.value = '';page.value = 1;filter.value = '';error.value = '';message.value = '';};
-      const loadSeason = async (number, preferredEpisode = '') => {
-        const response = await get('subtitle_series',{params:{tmdb_id:selectedMedia.value.id,season:Number(number)},timeout:90000});
+      const clearEpisodeResults = () => {result.value=null;files.value=null;destination.value='';targets.value=[];page.value=1;filter.value='';error.value='';message.value='';};
+      const loadSeason = async (number,preferredEpisode='') => {
+        const response=await get('subtitle_series',{params:{tmdb_id:selectedMedia.value.id,season:Number(number)},timeout:90000});
         if (!response?.success) throw new Error(response?.message || '无法读取本季集列表');
-        series.value = response;seasonNo.value = String(number);
-        episodeNo.value = response.episodes.some(ep=>String(ep.number)===String(preferredEpisode)) ? String(preferredEpisode) : '';
+        series.value=response;seasonNo.value=String(number);
+        episodeNo.value=response.episodes.some(ep=>String(ep.number)===String(preferredEpisode)) ? String(preferredEpisode) : '';
       };
       const fetchSelectedSubtitle = async () => {
-        const payload = {tmdb_id:selectedMedia.value.id,media_type:selectedMedia.value.media_type};
-        if (payload.media_type==='tv') {payload.season = Number(seasonNo.value);payload.episode = Number(episodeNo.value);}
-        busyMessage.value = payload.media_type==='tv' ? '正在核对本集字幕及字幕包，请稍候…' : '正在查找字幕…';
-        const response = await post('subtitle_selected',payload);
-        selectedMedia.value = response.selected_media || selectedMedia.value;result.value = response;
+        const payload={tmdb_id:selectedMedia.value.id,media_type:selectedMedia.value.media_type};
+        if (payload.media_type==='tv') {payload.season=Number(seasonNo.value);payload.episode=Number(episodeNo.value);}
+        busyMessage.value=payload.media_type==='tv'?'正在核对本集字幕与包内文件，首次查询可能需要 1–2 分钟…':'正在查找字幕…';
+        const response=await post('subtitle_selected',payload);selectedMedia.value=response.selected_media || selectedMedia.value;result.value=response;
       };
-      const chooseMedia = async (item, targetId = '', scope = null) => {
+      const chooseMedia = async (item,targetId='',selectedScope=null) => {
         if (busy.value || working.value) return;
-        clearEpisodeResults();series.value = null;seasonNo.value = '';episodeNo.value = '';
-        selectedMedia.value = item;busy.value = true;busyMessage.value = item.media_type==='tv' ? '正在读取季集信息…' : '正在查找字幕…';
+        clearEpisodeResults();series.value=null;seasonNo.value='';episodeNo.value='';
+        selectedMedia.value=item;busy.value=true;busyMessage.value=item.media_type==='tv'?'正在读取季集信息…':'正在查找字幕…';
         try {
           if (item.media_type==='tv') {
-            const catalog = await get('subtitle_series',{params:{tmdb_id:item.id},timeout:90000});
+            const catalog=await get('subtitle_series',{params:{tmdb_id:item.id},timeout:90000});
             if (!catalog?.success) throw new Error(catalog?.message || '无法读取季集信息');
-            selectedMedia.value = catalog.selected_media || item;
-            const first = catalog.seasons.find(s=>s.number===scope?.season) || catalog.seasons.find(s=>s.number>0 && s.episode_count>0) || catalog.seasons.find(s=>s.number>0) || catalog.seasons[0];
-            await loadSeason(first.number,scope?.episode);
-            if (scope && episodeNo.value) {await fetchSelectedSubtitle();destination.value = targetId;}
-          } else {await fetchSelectedSubtitle();destination.value = targetId;}
-        } catch (caught) {error.value = caught.message || '字幕搜索失败';}
-        finally {busy.value = false;busyMessage.value = '';}
+            selectedMedia.value=catalog.selected_media || item;
+            const first=catalog.seasons.find(s=>s.number===selectedScope?.season) || catalog.seasons.find(s=>s.number>0 && s.episode_count>0) || catalog.seasons.find(s=>s.number>0) || catalog.seasons[0];
+            await loadSeason(first.number,selectedScope?.episode);
+            if (selectedScope && episodeNo.value) {await fetchSelectedSubtitle();destination.value=targetId;}
+          } else {await fetchSelectedSubtitle();destination.value=targetId;}
+        } catch(caught) {error.value=caught.message || '字幕搜索失败';}
+        finally {busy.value=false;busyMessage.value='';}
       };
       const changeSeason = async value => {
         if (busy.value || working.value) return;
-        clearEpisodeResults();seasonNo.value = value;episodeNo.value = '';busy.value = true;busyMessage.value = '正在读取本季集列表…';
-        try {await loadSeason(value);} catch (caught) {series.value = {...series.value,episodes:[]};error.value = caught.message || '季集查询失败';}
-        finally {busy.value = false;busyMessage.value = '';}
+        clearEpisodeResults();seasonNo.value=value;episodeNo.value='';busy.value=true;busyMessage.value='正在读取本季集列表…';
+        try {await loadSeason(value);} catch(caught) {series.value={...series.value,episodes:[]};error.value=caught.message || '季集查询失败';}
+        finally {busy.value=false;busyMessage.value='';}
       };
       const searchEpisode = async () => {
         if (busy.value || working.value) return;
-        if (!episodeNo.value) {error.value = '请先选择一集';return;}
-        clearEpisodeResults();busy.value = true;
-        try {await fetchSelectedSubtitle();} catch (caught) {error.value = caught.message || '本集字幕搜索失败';}
-        finally {busy.value = false;busyMessage.value = '';}
+        if (!episodeNo.value) {error.value='请先选择一集';return;}
+        clearEpisodeResults();busy.value=true;
+        try {await fetchSelectedSubtitle();} catch(caught) {error.value=caught.message || '本集字幕搜索失败';}
+        finally {busy.value=false;busyMessage.value='';}
       };
-      const backToChoices = () => {const previous = choices.value;resetManual();if (previous) choices.value = previous;else findMedia();};
+      const backToChoices = () => {const previous=choices.value;resetManual();if (previous) choices.value=previous;else findMedia();};
       const searchFromLibrary = item => {
-        keyword.value = item.title;mediaType.value = item.season != null ? 'tv' : 'movie';
-        if (item.tmdb_id) {
-          choices.value = null;
-          chooseMedia({id:String(item.tmdb_id),title:item.title,year:item.year,media_type:mediaType.value},item.id,
-            item.season != null && item.episode != null ? {season:item.season,episode:item.episode} : null);
-        } else findMedia();
+        tab.value='manual';keyword.value=item.title;mediaType.value=item.season!=null?'tv':'movie';
+        if (item.tmdb_id) {choices.value=null;chooseMedia({id:String(item.tmdb_id),title:item.title,year:item.year,media_type:mediaType.value},item.id,
+          item.season!=null && item.episode!=null ? {season:item.season,episode:item.episode} : null);} else findMedia();
       };
-      const uploadTool = () => act(async () => {
+      const uploadTool = () => act(async()=>{
         if (!toolFile.value) return;
-        const form = new FormData();form.append('file',toolFile.value);
-        const response = unwrap(await props.api.post(endpoint('subtitle_tool_install'),form));
-        if (!response?.success) throw new Error(response?.message || '导入失败');
-        message.value = response.message;await loadStatus();
+        const form=new FormData();form.append('file',toolFile.value);
+        const response=unwrap(await props.api.post(endpoint('subtitle_tool_install'),form));
+        if (!response?.success) throw new Error(response?.message || '导入失败');message.value=response.message;await loadStatus();
       });
-      const startAuth = () => act(async () => {auth.value = await post('subtitle_auth_start');});
-      const submitAuth = () => act(async () => {
-        const value = code.value;code.value = '';
-        const response = await post('subtitle_auth_submit', {session:auth.value.session,code:value});
-        auth.value = {...auth.value,...response};
+      const startAuth = () => act(async()=>{auth.value=await post('subtitle_auth_start');});
+      const submitAuth = () => act(async()=>{
+        const value=code.value;code.value='';const response=await post('subtitle_auth_submit',{session:auth.value.session,code:value});auth.value={...auth.value,...response};
       });
-      const scan = download => act(async () => {message.value = (await post('subtitle_scan',{download,keyword:scanKeyword.value.trim()})).message;library.value = await get('subtitle_library');});
-      const preview = item => act(async () => {
-        files.value = await post('subtitle_preview',{id:item.id});files.value.title = item.title;
-        selectedFile.value = files.value.files[0]?.id || '';
+      const preview = item => act(async()=>{
+        files.value=await post('subtitle_preview',{id:item.id});files.value.title=item.title;selectedFile.value=files.value.files[0]?.id || '';
+        targets.value=[];targetMessage.value='';saveMode.value=destination.value?'nas':'device';
+        try {
+          const selected=selectedMedia.value;
+          const response=await get('subtitle_destinations',{params:{tmdb_id:selected.id,media_type:selected.media_type,
+            season:selected.media_type==='tv'?Number(seasonNo.value):-1,episode:selected.media_type==='tv'?Number(episodeNo.value):-1}});
+          if (!response?.success) throw new Error();targets.value=response.items;
+          if (!targets.value.some(i=>i.id===destination.value && i.state!=='present')) destination.value='';
+          saveMode.value=destination.value?'nas':'device';
+          if (!targets.value.length) targetMessage.value='本地检查记录中还没有这部作品的对应文件。可先到影视库补全按片名检查，或下载到当前设备。';
+          else if (targets.value.every(i=>i.state==='present')) targetMessage.value='对应媒体已存在中文字幕，将保留已有文件；仍可下载到当前设备比较版本。';
+        } catch {targetMessage.value='暂时无法读取 NAS 目标，仍可下载到当前设备。';}
       });
-      const download = () => act(async () => {
-        const response = await post('subtitle_download',{file_id:selectedFile.value,media_id:destination.value});
+      const download = () => act(async()=>{
+        const response=await post('subtitle_download',{file_id:selectedFile.value,media_id:saveMode.value==='nas'?destination.value:''});
         if (response.ticket) {
-          const raw = await props.api.get(endpoint('subtitle_file'),{params:{ticket:response.ticket},responseType:'blob'});
-          const blob = raw instanceof Blob ? raw : raw.data;
+          const raw=await props.api.get(endpoint('subtitle_file'),{params:{ticket:response.ticket},responseType:'blob'});const blob=raw instanceof Blob?raw:raw.data;
           if (!(blob instanceof Blob)) throw new Error('无法读取下载文件，请刷新页面后重试');
-          const url = URL.createObjectURL(blob), link = document.createElement('a');link.href = url;link.download = response.name;
-          link.click();setTimeout(() => URL.revokeObjectURL(url),30000);message.value = '字幕已交给浏览器，保存到当前设备';
-        } else {message.value = response.message;library.value = await get('subtitle_library');}
+          const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=response.name;link.click();setTimeout(()=>URL.revokeObjectURL(url),30000);
+          message.value='字幕已交给浏览器，保存到当前设备';
+        } else {message.value=response.message;await loadLibrary();}
       });
       const poll = async () => {
-        if (polling || disposed) return;polling = true;
+        if (polling || disposed) return;polling=true;
         try {
           if (auth.value && ['starting','waiting','verifying'].includes(auth.value.state)) {
-            const next = await get('subtitle_auth_state');auth.value = next;
-            if (next.state === 'complete') {code.value = '';await loadStatus();}
+            const next=await get('subtitle_auth_state');auth.value=next;if (next.state==='complete') {code.value='';await loadStatus();}
           }
-          if (library.value?.running) library.value = await get('subtitle_library');
+          if (library.value?.running) await loadLibrary();
         } catch { /* A later poll recovers a transient connection failure. */ }
-        finally {polling = false;}
+        finally {polling=false;}
       };
-      onMounted(() => {emit('layout',{maxWidth:'1120px'});loadStatus();timer = setInterval(poll,2000);});
-      onUnmounted(() => {disposed = true;clearInterval(timer);code.value = '';});
-      const button = (text, action, disabled=false, primary=false) => h('button',{type:'button',class:['zvh-button',primary && 'zvh-primary'],onClick:action,disabled},text);
-      const stateText = value => ({present:'已有中文',missing:'未发现中文',unknown:'待确认',excluded:'中文原声，已跳过'}[value] || value);
-      return () => h('div',{class:'zvh-root'},[
-        h('header',{class:'zvh-header'},[h('div',[h('p',{class:'zvh-kicker'},'极影视助手'),h('h2','中文字幕补全'),h('p',{class:'zvh-muted'},'定时检查入库媒体，保留手动搜索和下载。')]),button('插件设置',()=>emit('switch'))]),
-        h('div',{class:'zvh-status',role:'status'},[h('span',{class:['zvh-dot',status.value?.authorized && 'zvh-ready']}),h('span',status.value?.message || '读取授权状态…'),
-          button('刷新状态',loadStatus,working.value),button(status.value?.authorized?'重新授权':'网页授权',startAuth,working.value || busy.value || library.value?.running)]),
-        status.value && !status.value.installed && h('section',{class:'zvh-panel zvh-settings'},[
-          h('h3','首次初始化'),h('p','从自己的 zspace-nas-agent-toolkit v0.1.4 工具包中选择 Linux 授权程序（x64 / arm64 对应 NAS 架构），导入后即可网页授权，无需终端。'),
-          h('input',{type:'file','aria-label':'Linux 授权程序',onChange:e=>{toolFile.value=e.target.files?.[0] || null;}}),
-          button('导入授权工具',uploadTool,working.value || !toolFile.value)]),
-        auth.value && h('section',{class:'zvh-panel zvh-settings'},[h('h3','极空间网页授权'),h('p',{role:'status'},auth.value.message),
-          auth.value.state === 'waiting' && [h('a',{href:auth.value.url,target:'_blank',rel:'noopener noreferrer',class:'zvh-button zvh-primary'},'打开极空间授权网页'),
-            h('label',{class:'zvh-field'},[h('span','一次性授权码'),h('input',{'aria-label':'一次性授权码',type:'password',autocomplete:'one-time-code',value:code.value,onInput:e=>{code.value=e.target.value;}})]),
-            button('完成授权',submitAuth,working.value || !code.value.trim())],
-          ['failed','expired'].includes(auth.value.state) && button('重新开始',startAuth,working.value)]),
-        error.value && h('div',{class:'zvh-notice zvh-error',role:'alert'},error.value),message.value && h('div',{class:'zvh-notice',role:'status'},message.value),
-        h('section',{class:'zvh-panel zvh-settings'},[h('div',{class:'zvh-results-heading'},[h('h3','本地影视库检查'),h('div',{class:'zvh-actions'},[
-          button('立即检查',()=>scan(false),working.value || library.value?.running || !status.value?.enabled),
-          button('立即补全',()=>scan(true),working.value || busy.value || library.value?.running || !status.value?.authorized || !status.value?.enabled,true)])]),
-          h('label',{class:'zvh-field'},[h('span','本次检查的媒体名称（可选，定时任务仍检查全部）'),h('input',{'aria-label':'本次检查的媒体名称',value:scanKeyword.value,maxlength:200,placeholder:'留空检查全部；也可填写一个片名',onInput:e=>{scanKeyword.value=e.target.value;}})]),
-          h('p',{class:'zvh-muted'},`定时补全${library.value?.auto_enabled?'已开启':'未开启'} · ${library.value?.cron || '*/30 * * * *'} · 每轮分批检查，最多尝试 5 个媒体`),
-          h('p',`已有中文 ${library.value?.counts?.present || 0} · 未发现中文 ${library.value?.counts?.missing || 0} · 待确认 ${library.value?.counts?.unknown || 0} · 中文原声跳过 ${library.value?.counts?.excluded || 0}`),
-          h('p',{role:'status'},library.value?.running ? `正在${library.value.mode || '检查'}：已检查 ${library.value.checked}，已下载 ${library.value.downloaded}` : library.value?.last_message || '点击“立即检查”建立媒体列表，或在设置中开启定时补全。'),
-          h('p',{class:'zvh-muted'},'根据 TMDB 原始语言跳过中文原声作品。仅检查 MoviePilot 本地影视入库目录；语言不明、STRM 和原盘跳过；不识别画面烧录字幕，不覆盖已有字幕。'),
-          h('label',{class:'zvh-field'},[h('span','检查结果'),h('select',{'aria-label':'检查结果',value:listFilter.value,onChange:e=>{listFilter.value=e.target.value;}},[
-            ...['missing','unknown','present','excluded','all'].map(v=>h('option',{value:v},v==='all'?'全部':stateText(v)))])]),
-          media.value.length ? h('div',{class:'zvh-library-list'},media.value.slice(0,60).map(item=>h('div',{class:'zvh-library-item',key:item.id},[
-            h('strong',`${item.title} · ${stateText(item.state)}`),h('small',item.path),h('span',item.reason),button('为此媒体搜索',()=>searchFromLibrary(item),busy.value || working.value)]))) : h('p',{class:'zvh-muted'},'当前列表没有此类媒体。')]),
+      onMounted(()=>{emit('layout',{maxWidth:'1160px'});loadStatus();timer=setInterval(poll,2000);});
+      onUnmounted(()=>{disposed=true;clearInterval(timer);code.value='';});
+      const icon = name => h('svg',{viewBox:'0 0 24 24',fill:'none',stroke:'currentColor','stroke-width':1.6,'stroke-linecap':'round','stroke-linejoin':'round','aria-hidden':'true'},[h('path',{d:PATHS[name]})]);
+      const button = (text,action,disabled=false,primary=false) => h('button',{type:'button',class:['zvh-button',primary && 'zvh-primary'],onClick:action,disabled},text);
+      const empty = (title,description,action=null) => h('div',{class:'zvh-empty'},[icon('search'),h('strong',title),h('p',description),action]);
+      const pagination = (current,total,previous,next,description) => h('footer',{class:'zvh-pagination'},[
+        h('span',description),h('div',[button('上一页',previous,current<=1 || working.value),h('span',`${current} / ${total}`),button('下一页',next,current>=total || working.value)])]);
+      const libraryView = () => h('div',{class:'zvh-tab-content',role:'tabpanel','aria-label':'影视库补全'},[
+        h('section',{class:'zvh-panel zvh-settings'},[
+          h('div',{class:'zvh-section-heading'},[h('div',[h('h3','检查本地影视的中文字幕'),h('p',{class:'zvh-muted'},'按片名检查一部作品，或分批检查整个影视库。')]),
+            h('span',{class:'zvh-badge'},library.value?.auto_enabled?'定时补全已开启':'定时补全未开启')]),
+          h('form',{class:'zvh-library-search',onSubmit:e=>{e.preventDefault();applyLibraryFilter();}},[
+            h('label',{class:'zvh-field zvh-keyword'},[h('span','本地影视名称'),h('input',{'aria-label':'本地影视名称',value:scanKeyword.value,maxlength:200,placeholder:'搜索影视名称，留空查看全部',onInput:e=>{scanKeyword.value=e.target.value;}})]),
+            h('button',{type:'submit',class:'zvh-button',disabled:working.value || libraryBusy.value},'筛选记录'),
+            (scanKeyword.value || libraryQuery.value) && button('清除筛选',()=>applyLibraryFilter(true),working.value)]),
+          h('div',{class:'zvh-scan-actions'},[
+            h('p',{class:'zvh-muted'},'片名范围同时用于检查、结果和统计。定时任务仍检查全部影视。'),
+            h('div',{class:'zvh-actions'},[button(scanKeyword.value.trim()?'检查此作品':'检查全部影视',()=>scan(false),working.value || busy.value || library.value?.running || !status.value?.enabled),
+              button(scanKeyword.value.trim()?'补全此作品':'补全全部影视',()=>scan(true),working.value || busy.value || library.value?.running || !status.value?.authorized || !status.value?.enabled,true)])])]),
+        h('div',{class:'zvh-scope-line'},[h('strong',`当前范围：${scope.value}`),h('span',`共 ${library.value?.scoped_total || 0} 个已检查文件`),
+          button('刷新记录',()=>act(loadLibrary),working.value || libraryBusy.value)]),
+        h('div',{class:'zvh-stats'},['missing','present','unknown','excluded'].map(state=>h('button',{
+          type:'button',class:['zvh-stat',`zvh-${state}`,listFilter.value===state && 'zvh-active'],'aria-pressed':listFilter.value===state,
+          'aria-label':`${STATES[state]} ${library.value?.counts?.[state] || 0}`,onClick:()=>changeLibraryState(state),disabled:working.value || libraryBusy.value,
+        },[h('span',STATES[state]),h('strong',library.value?.counts?.[state] || 0),h('small',state==='missing'?'可尝试补全':state==='present'?'无需自动补全':state==='unknown'?'信息不足，需人工确认':'自动搜索已跳过')]))),
+        library.value?.task?.started_at && h('section',{class:'zvh-task',role:'status'},[
+          h('div',[h('strong',library.value.running?`正在${library.value.task.mode}`:`最近一次${library.value.task.mode}`),h('span',{class:'zvh-muted'},`任务范围：${library.value.task.keyword || '全部本地影视'}`)]),
+          h('p',library.value.task.error || `${library.value.task.checked || 0} / ${library.value.task.planned || 0} 个已检查 · 下载 ${library.value.task.downloaded || 0} 份字幕`),
+          library.value.running && h('progress',{max:Math.max(1,library.value.task.planned || 1),value:library.value.task.checked || 0,'aria-label':'本轮检查进度'}),
+          h('small',{class:'zvh-muted'},library.value.running ? library.value.task.current_title || '正在读取本地影视文件…' : `${date(library.value.task.finished_at)}${library.value.task.matched>library.value.task.planned?' · 分批检查，范围内还有文件等待后续轮询':''}`)]),
+        h('section',{class:'zvh-panel'},[
+          h('div',{class:'zvh-results-heading'},[h('div',[h('h3','检查记录'),h('p',{class:'zvh-muted'},`${scope.value} · ${STATES[listFilter.value]} · ${library.value?.total || 0} 个文件`)]),
+            button('全部状态',()=>changeLibraryState('all'),listFilter.value==='all' || working.value || libraryBusy.value)]),
+          libraryBusy.value ? h('div',{class:'zvh-empty',role:'status'},'正在读取当前范围…') : library.value?.items?.length ? h('div',{class:'zvh-library-list'},library.value.items.map(item=>h('article',{class:'zvh-library-item',key:item.id},[
+            h('div',{class:'zvh-library-info'},[h('div',{class:'zvh-row-heading'},[h('h4',item.title),h('span',{class:['zvh-badge',`zvh-${item.state}`]},STATES[item.state])]),
+              h('p',{class:'zvh-muted'},`${episodeLabel(item)} · ${date(item.checked_at)}`),h('p',{class:'zvh-reason'},item.reason),
+              h('details',{class:'zvh-file-details'},[h('summary','查看文件位置'),h('code',item.path)])]),
+            button('为此文件找字幕',()=>searchFromLibrary(item),busy.value || working.value)]))) : empty(
+              libraryQuery.value?'当前范围没有符合条件的记录':'还没有符合条件的检查记录',
+              library.value?.scoped_total ? '可切换“全部状态”查看此作品的其他记录。':'点击上方检查按钮建立记录；这里只展示实际检查过的文件。',
+              listFilter.value!=='all' && button('查看全部状态',()=>changeLibraryState('all'),working.value)),
+          library.value?.total>0 && pagination(library.value.page,library.value.pages,()=>turnLibraryPage(library.value.page-1),()=>turnLibraryPage(library.value.page+1),`共 ${library.value.total} 个文件 · 每页 ${library.value.page_size} 个`)]),
+        h('details',{class:'zvh-rules'},[h('summary','检查规则与目录'),h('p','按 TMDB 原始语言跳过中文原声作品。只检查 MoviePilot 本地影视入库目录；语言不明、STRM 和原盘需人工确认，不识别画面烧录字幕，不覆盖已有字幕。'),
+          h('p',`每轮最多检查 ${library.value?.batch_size || 25} 个媒体、尝试 5 个下载；按设置周期执行。`),
+          ...(library.value?.roots || []).map(root=>h('code',root))]),
+      ]);
+      const manualView = () => h('div',{class:'zvh-tab-content',role:'tabpanel','aria-label':'手动找字幕'},[
         h('form',{class:'zvh-panel zvh-settings',onSubmit:e=>{e.preventDefault();findMedia();}},[
-          h('h3','手动查找字幕'),h('p',{class:'zvh-muted'},'先按名称查找电影或剧集，核对年份并选择作品，再搜索它的字幕。'),
+          h('div',{class:'zvh-section-heading'},[h('div',[h('h3','先找到你要的作品'),h('p',{class:'zvh-muted'},'按名称查找，核对海报和年份；电视剧还可选择季和集。')]),h('span',{class:'zvh-badge'},'1 选作品 → 2 选字幕 → 3 下载')]),
           h('div',{class:'zvh-search'},[
-            h('label',{class:'zvh-field zvh-keyword'},[h('span','影视名称'),h('input',{'aria-label':'影视名称',value:keyword.value,maxlength:200,disabled:busy.value || working.value,placeholder:'如：异形 / 肖申克的救赎',onInput:e=>{keyword.value=e.target.value;resetManual();}})]),
+            h('label',{class:'zvh-field zvh-keyword'},[h('span','影视名称'),h('input',{'aria-label':'影视名称',value:keyword.value,maxlength:200,disabled:busy.value || working.value,placeholder:'例如：异形 / 现在不是出轨的问题',onInput:e=>{keyword.value=e.target.value;resetManual();}})]),
             h('label',{class:'zvh-field'},[h('span','影视类型'),h('select',{'aria-label':'影视类型',value:mediaType.value,disabled:busy.value || working.value,onChange:e=>{mediaType.value=e.target.value;resetManual();}},[
               h('option',{value:'all'},'电影和剧集'),h('option',{value:'movie'},'电影'),h('option',{value:'tv'},'剧集')])]),
-            h('button',{type:'submit',class:'zvh-button zvh-primary',disabled:busy.value || working.value || !status.value?.enabled},busy.value && !selectedMedia.value?'正在查找…':'查找影视')])]),
+            h('button',{type:'submit',class:'zvh-button zvh-primary',disabled:busy.value || working.value || !status.value?.enabled},'查找影视')])]),
+        busy.value && h('div',{class:'zvh-loading',role:'status'},[h('span',{class:'zvh-spinner'}),h('span',busyMessage.value)]),
+        !choices.value && !selectedMedia.value && !busy.value && empty('从片名开始','无需填写 TMDB 或 IMDb 编号。选择具体作品后，只查它的字幕。'),
         choices.value && !selectedMedia.value && h('section',{class:'zvh-panel zvh-settings'},[
-          h('h3',`找到 ${choices.value.count} 部候选作品`),h('p',{class:'zvh-muted'},'请选择你要找字幕的那一部；同名作品可根据年份、类型和简介区分。'),
-          h('div',{class:'zvh-media-choices'},visibleChoices.value.map(item=>h('article',{key:item.media_type+item.id,class:['zvh-media-choice',selectedMedia.value?.id===item.id && selectedMedia.value?.media_type===item.media_type && 'zvh-selected']},[
-            h('h4',item.title),h('p',{class:'zvh-muted'},`${item.media_type==='movie'?'电影':'剧集'} · ${item.year || '年份未知'}`),
-            item.original_title && item.original_title!==item.title && h('small',item.original_title),
-            item.overview && h('p',{class:'zvh-overview'},item.overview),
-            h('button',{type:'button',class:'zvh-button zvh-primary','aria-label':`为《${item.title}》（${item.year || '年份未知'}·${item.media_type==='movie'?'电影':'剧集'}）${item.media_type==='tv'?'选择季集':'查找字幕'}`,onClick:()=>chooseMedia(item),disabled:busy.value || working.value || !status.value?.authorized},item.media_type==='tv'?'选择季集':'查找字幕')]))),
-          !choices.value.count && h('p',choices.value.message),
-          choicePages.value>1 && h('footer',{class:'zvh-pagination'},[h('span',`${choices.value.count} 部作品`),h('div',[
-            button('上一页作品',()=>{choicePage.value--;},choicePage.value<=1),h('span',`${choicePage.value} / ${choicePages.value}`),button('下一页作品',()=>{choicePage.value++;},choicePage.value>=choicePages.value)])])]),
-        selectedMedia.value && h('div',{class:'zvh-notice zvh-selected-work',role:'status'},[
-          h('span',`已选择：${selectedMedia.value.title}（${selectedMedia.value.year || '年份未知'} · ${selectedMedia.value.media_type==='movie'?'电影':'剧集'}）`),
-          button('重新选片',backToChoices,busy.value || working.value),
-          h('p',busy.value ? busyMessage.value : selectedMedia.value.media_type==='tv' ? (result.value ? `仅显示第 ${seasonNo.value} 季第 ${episodeNo.value} 集的字幕` : '请选择季和集，再查找本集字幕') : '仅显示这部作品的字幕')]),
-        selectedMedia.value?.media_type==='tv' && series.value && h('section',{class:'zvh-panel zvh-search'},[
-          h('label',{class:'zvh-field'},[h('span','季'),h('select',{'aria-label':'季',value:seasonNo.value,disabled:busy.value || working.value,onChange:e=>changeSeason(e.target.value)},
-            series.value.seasons.map(s=>h('option',{value:String(s.number)},`${s.number===0?'特别篇':`第 ${s.number} 季`} · ${s.name}`)))]),
-          h('label',{class:'zvh-field zvh-keyword'},[h('span','集'),h('select',{'aria-label':'集',value:episodeNo.value,disabled:busy.value || working.value,onChange:e=>{episodeNo.value=e.target.value;clearEpisodeResults();}},[
-            h('option',{value:''},'请选择一集'),...series.value.episodes.map(ep=>h('option',{value:String(ep.number)},`第 ${ep.number} 集 · ${ep.name}`))])]),
-          button(busy.value?'正在查询…':'查找本集字幕',searchEpisode,busy.value || working.value || !episodeNo.value || !status.value?.authorized,true)]),
+          h('div',{class:'zvh-section-heading'},[h('h3',`找到 ${choices.value.count} 部候选作品`),h('span',{class:'zvh-muted'},'根据海报、年份和简介选择')]),
+          h('div',{class:'zvh-media-choices'},visibleChoices.value.map(item=>h('article',{key:item.media_type+item.id,class:'zvh-media-choice'},[
+            h(Poster,{media:item}),h('div',{class:'zvh-choice-info'},[h('div',{class:'zvh-row-heading'},[h('span',{class:'zvh-badge'},item.media_type==='tv'?'剧集':'电影'),h('span',{class:'zvh-muted'},item.year || '年份未知')]),
+              h('h4',item.title),item.original_title && item.original_title!==item.title && h('small',{class:'zvh-muted'},item.original_title),
+              h('p',{class:'zvh-overview'},item.overview || '暂无简介'),
+              h('button',{type:'button',class:'zvh-button zvh-primary','aria-label':`为《${item.title}》（${item.year || '年份未知'}·${item.media_type==='movie'?'电影':'剧集'}）${item.media_type==='tv'?'选择季集':'查找字幕'}`,onClick:()=>chooseMedia(item),disabled:busy.value || working.value || !status.value?.authorized},item.media_type==='tv'?'选择季集':'查找字幕')])]))),
+          !choices.value.count && empty('没有找到作品',choices.value.message),
+          choicePages.value>1 && pagination(choicePage.value,choicePages.value,()=>{choicePage.value--;},()=>{choicePage.value++;},`${choices.value.count} 部作品`)]),
+        selectedMedia.value && h('section',{class:'zvh-panel zvh-selected-work'},[
+          h('div',{class:'zvh-selected-header'},[h(Poster,{media:selectedMedia.value}),h('div',{class:'zvh-selected-info'},[
+            h('p',{class:'zvh-kicker'},'已选择作品'),h('h3',selectedMedia.value.title),h('p',{class:'zvh-muted'},`${selectedMedia.value.year || '年份未知'} · ${selectedMedia.value.media_type==='tv'?'剧集':'电影'}`),
+            h('p',selectedMedia.value.media_type==='tv'?(result.value?`仅显示第 ${seasonNo.value} 季第 ${episodeNo.value} 集的字幕`:'选择具体一集，再查找本集字幕'):'只显示这部电影的字幕')]),button('重新选片',backToChoices,busy.value || working.value)]),
+          selectedMedia.value.media_type==='tv' && series.value && h('div',{class:'zvh-season-picker'},[
+            h('label',{class:'zvh-field'},[h('span','季'),h('select',{'aria-label':'季',value:seasonNo.value,disabled:busy.value || working.value,onChange:e=>changeSeason(e.target.value)},series.value.seasons.map(s=>h('option',{value:String(s.number)},s.number===0?'特别篇':s.name || `第 ${s.number} 季`)))]),
+            h('label',{class:'zvh-field zvh-keyword'},[h('span','集'),h('select',{'aria-label':'集',value:episodeNo.value,disabled:busy.value || working.value,onChange:e=>{episodeNo.value=e.target.value;clearEpisodeResults();}},[h('option',{value:''},'请选择一集'),...series.value.episodes.map(ep=>h('option',{value:String(ep.number)},`第 ${ep.number} 集 · ${ep.name}`))])]),
+            button('查找本集字幕',searchEpisode,busy.value || working.value || !episodeNo.value || !status.value?.authorized,true)])]),
         result.value && h('section',{class:'zvh-panel'},[
-          h('div',{class:'zvh-results-heading'},[h('h3',`找到 ${result.value.count} 个字幕版本`),h('input',{'aria-label':'筛选搜索结果',placeholder:'筛选名称、语言、版本',value:filter.value,onInput:e=>{filter.value=e.target.value;page.value=1;}})]),
-          h('div',{class:'zvh-table-wrap'},[h('table',{class:'zvh-table'},[h('thead',[h('tr',[h('th','字幕版本'),h('th','格式'),h('th','操作')])]),h('tbody',visible.value.map(item=>h('tr',{key:item.id},[
-            h('td',[h('strong',item.title),h('small',item.archive_title || item.movie)]),h('td',item.format),h('td',button('选择 / 下载',()=>preview(item),working.value || busy.value || !item.download_available))])) )])]),
-          result.value.archive_warning && h('p',{class:'zvh-muted'},result.value.archive_warning),
-          !rows.value.length && h('p',result.value.message || '没有符合筛选条件的字幕'),
-          h('footer',{class:'zvh-pagination'},[h('span',`${rows.value.length} 个结果`),h('div',[button('上一页',()=>{page.value--;},page.value<=1),h('span',`${Math.min(page.value,pages.value)} / ${pages.value}`),button('下一页',()=>{page.value++;},page.value>=pages.value)])])]),
-        files.value && h('section',{class:'zvh-panel zvh-settings'},[h('h3','选择字幕文件'),h('p',files.value.title),
+          h('div',{class:'zvh-results-heading'},[h('div',[h('h3',`找到 ${result.value.count} 个字幕版本`),h('p',{class:'zvh-muted'},'整季包已按集展开，可比较语言和发行版本。')]),
+            h('div',{class:'zvh-result-filters'},[h('input',{'aria-label':'筛选搜索结果',placeholder:'筛选语言、格式或发行版本',value:filter.value,onInput:e=>{filter.value=e.target.value;page.value=1;}}),
+              h('label',{class:'zvh-checkbox'},[h('input',{type:'checkbox',checked:chineseOnly.value,onChange:e=>{chineseOnly.value=e.target.checked;page.value=1;}}),'仅看已标注中文'])])]),
+          h('div',{class:'zvh-sub-list'},visible.value.map(item=>h('article',{class:'zvh-sub-row',key:item.id},[
+            h('div',[h('div',{class:'zvh-row-heading'},[h('span',{class:'zvh-format'},item.format),item.chinese_label && h('span',{class:'zvh-badge'},'中文标记')]),h('strong',item.title),
+              h('small',{class:'zvh-muted'},item.archive_title?'来源：'+item.archive_title:item.movie)]),button('选择字幕',()=>preview(item),working.value || busy.value || !item.download_available)]))),
+          result.value.archive_warning && h('p',{class:'zvh-inline-notice'},result.value.archive_warning),
+          !rows.value.length && empty('没有符合条件的字幕',result.value.message || '可清空筛选词，或取消“仅看已标注中文”。'),
+          pagination(Math.min(page.value,pages.value),pages.value,()=>{page.value--;},()=>{page.value++;},`${rows.value.length} 个结果`)]),
+        files.value && h('section',{class:'zvh-panel zvh-settings'},[
+          h('div',{class:'zvh-section-heading'},[h('div',[h('h3','下载选中的字幕'),h('p',{class:'zvh-muted'},files.value.title)]),h('span',{class:'zvh-badge'},'最后一步')]),
           h('label',{class:'zvh-field'},[h('span','字幕文件'),h('select',{'aria-label':'字幕文件',value:selectedFile.value,onChange:e=>{selectedFile.value=e.target.value;}},files.value.files.map(f=>h('option',{value:f.id},f.title)))]),
-          h('label',{class:'zvh-field'},[h('span','保存位置'),h('select',{'aria-label':'保存位置',value:destination.value,onChange:e=>{destination.value=e.target.value;}},[
-            h('option',{value:''},'下载到当前设备（手机 / 电脑）'),...(library.value?.items || []).map(i=>h('option',{value:i.id},'保存到 NAS：'+i.path))])]),
-          files.value.message && h('p',files.value.message),button(working.value?'处理中…':destination.value?'保存到 NAS 媒体目录':'下载到当前设备',download,working.value || busy.value || !selectedFile.value,true)]),
-        h('p',{class:'zvh-footnote'},'字幕时间轴可能因发行版本不同而有偏差；自动匹配会校验影片身份与剧集季集。豆瓣同步和评分在插件设置中使用。'),
+          h('div',{class:'zvh-save-options'},['device','nas'].map(value=>h('label',{class:['zvh-save-option',saveMode.value===value && 'zvh-active']},[
+            h('input',{type:'radio',name:'zvh-save-mode',value,checked:saveMode.value===value,onChange:()=>{saveMode.value=value;}}),
+            h('div',[h('strong',value==='device'?'下载到当前设备':'保存到 NAS'),h('p',value==='device'?'交给手机或电脑的浏览器保存':'写入对应影视文件的同级目录')])]))),
+          saveMode.value==='nas' && [h('label',{class:'zvh-field'},[h('span','NAS 对应媒体'),h('select',{'aria-label':'NAS 对应媒体',value:destination.value,onChange:e=>{destination.value=e.target.value;}},[
+            h('option',{value:''},'请选择对应文件'),...targets.value.map(i=>h('option',{value:i.id,disabled:i.state==='present'},(i.state==='present'?'已有中文 · ':'')+i.path))])])],
+          targetMessage.value && h('p',{class:'zvh-muted'},targetMessage.value),
+          files.value.message && h('p',files.value.message),
+          h('div',{class:'zvh-download-actions'},[h('p',{class:'zvh-muted'},'字幕时间轴可能因发行版本不同而有偏差。'),button(working.value?'处理中…':saveMode.value==='nas'?'保存到 NAS 媒体目录':'下载到当前设备',download,working.value || busy.value || !selectedFile.value || (saveMode.value==='nas' && !destination.value),true)])]),
+      ]);
+      return () => h('div',{class:'zvh-root'},[
+        h('header',{class:'zvh-header'},[h('div',{class:'zvh-brand'},[h('div',{class:'zvh-brand-icon'},icon('film')),h('div',[h('p',{class:'zvh-kicker'},'极影视助手 · 1.10.0'),h('h2','中文字幕补全'),h('p',{class:'zvh-muted'},'自动补全与手动选择，都在这里。')])]),button('插件设置',()=>emit('switch'))]),
+        h('div',{class:'zvh-status'},[h('div',[h('span',{class:['zvh-dot',status.value?.authorized && 'zvh-ready']}),h('span',status.value?.message || '读取授权状态…')]),
+          h('div',[button('刷新状态',loadStatus,working.value || libraryBusy.value),button(status.value?.authorized?'重新授权':'网页授权',startAuth,working.value || busy.value || library.value?.running)])]),
+        status.value && !status.value.installed && h('section',{class:'zvh-panel zvh-settings'},[
+          h('h3','首次初始化'),h('p','从自己的 zspace-nas-agent-toolkit v0.1.4 工具包中选择 NAS 架构对应的 Linux 授权程序，导入后即可网页授权，无需终端。'),
+          h('input',{type:'file','aria-label':'Linux 授权程序',onChange:e=>{toolFile.value=e.target.files?.[0] || null;}}),button('导入授权工具',uploadTool,working.value || !toolFile.value)]),
+        auth.value && h('section',{class:'zvh-panel zvh-settings'},[h('h3','极空间网页授权'),h('p',{role:'status'},auth.value.message),
+          auth.value.state==='waiting' && [h('a',{href:auth.value.url,target:'_blank',rel:'noopener noreferrer',class:'zvh-button zvh-primary'},'打开极空间授权网页'),
+            h('label',{class:'zvh-field'},[h('span','一次性授权码'),h('input',{'aria-label':'一次性授权码',type:'password',autocomplete:'one-time-code',value:code.value,onInput:e=>{code.value=e.target.value;}})]),button('完成授权',submitAuth,working.value || !code.value.trim())],
+          ['failed','expired'].includes(auth.value.state) && button('重新开始',startAuth,working.value)]),
+        h('nav',{class:'zvh-tabs',role:'tablist','aria-label':'字幕功能'},['library','manual'].map(value=>h('button',{type:'button',role:'tab','aria-selected':tab.value===value,onClick:()=>{tab.value=value;error.value='';message.value='';},class:tab.value===value?'zvh-active':''},[icon(value==='library'?'library':'search'),value==='library'?'影视库补全':'手动找字幕']))),
+        error.value && h('div',{class:'zvh-notice zvh-error',role:'alert'},error.value),message.value && h('div',{class:'zvh-notice zvh-success',role:'status'},message.value),
+        tab.value==='library'?libraryView():manualView(),
       ]);
     },
   });

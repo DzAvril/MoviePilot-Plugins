@@ -73,12 +73,36 @@ class SubtitleAutomation:
                     item.update(state='unknown', reason='等待重新核对 TMDB 原始语言')
         self.progress = {'running':False, 'checked':0, 'downloaded':0}
 
-    def snapshot(self):
-        items = list(self.data['items'].values())
+    def snapshot(self, keyword='', state='all', page=1, page_size=20):
+        if not isinstance(keyword,str) or len(keyword)>200 or any(ord(c)<32 for c in keyword):
+            return {'success':False,'message':'请输入不超过 200 个字符的影视名称'}
+        if state not in {'all','present','missing','unknown','excluded'}:
+            return {'success':False,'message':'检查状态无效'}
+        keyword = keyword.strip()
+        items = [dict(i) for i in self.data['items'].values() if self.matches_keyword(i,keyword)]
         counts = {state:sum(i.get('state') == state for i in items) for state in ('present','missing','unknown','excluded')}
+        scoped_total = len(items)
+        if state!='all':items = [i for i in items if i.get('state')==state]
+        items.sort(key=lambda i:(-i.get('checked_at',0),i['path']))
+        page_size = max(1,min(200,int(page_size)));pages = max(1,(len(items)+page_size-1)//page_size)
+        page = max(1,min(pages,int(page)))
+        task = dict(self.progress if self.progress['running'] else self.data.get('last_task',self.progress))
         return {'success':True, **self.progress, 'auto_enabled':bool(self.config.get('subtitle_auto')), 'cron':self.config.get('subtitle_cron','*/30 * * * *'),
-            'roots':self.roots, 'counts':counts, 'total_indexed':len(items), 'last_run':self.data.get('last_run'),
-            'last_message':self.data.get('last_message',''), 'items':sorted(items, key=lambda i:i.get('checked_at',0), reverse=True)[:200]}
+            'roots':self.roots, 'counts':counts, 'total_indexed':len(self.data['items']), 'scoped_total':scoped_total,
+            'batch_size':max(1,min(100,int(self.config.get('subtitle_batch',25)))),
+            'total':len(items),'page':page,'pages':pages,'page_size':page_size,'keyword':keyword,'state':state,'task':task,
+            'last_run':self.data.get('last_run'), 'last_message':self.data.get('last_message',''),
+            'items':items[(page-1)*page_size:page*page_size]}
+
+    @staticmethod
+    def matches_keyword(item, keyword):
+        return not keyword or keyword.casefold() in (str(item.get('title',''))+' '+str(item.get('path',''))).casefold()
+
+    def destinations(self, tmdb_id, media_type, season=-1, episode=-1):
+        items = [dict(i) for i in self.data['items'].values() if str(i.get('tmdb_id'))==str(tmdb_id)
+            and (i.get('season') is not None)==(media_type=='tv')
+            and (season<0 or i.get('season')==season) and (episode<0 or i.get('episode')==episode)]
+        return {'success':True,'items':sorted(items,key=lambda i:i['path'])}
 
     def _save(self):
         self.root.mkdir(parents=True, exist_ok=True)
@@ -92,7 +116,8 @@ class SubtitleAutomation:
     def start(self, download=False, keyword=""):
         if not isinstance(keyword,str) or len(keyword)>200 or any(ord(c)<32 for c in keyword):return {'success':False,'message':'媒体筛选名称无效'}
         if not self._lock.acquire(blocking=False):return {'success':False, 'message':'已有媒体检查正在运行'}
-        self.progress = {'running':True, 'checked':0, 'downloaded':0, 'mode':'补全' if download else '检查'}
+        self.progress = {'running':True, 'checked':0, 'downloaded':0, 'mode':'补全' if download else '检查',
+            'keyword':keyword.strip(),'matched':0,'planned':0,'started_at':time.time(),'current_title':'','error':''}
         self._thread = threading.Thread(target=self._run, args=(download, keyword.strip()), daemon=True);self._thread.start()
         return {'success':True, 'message':'已开始后台补全' if download else '已开始后台检查'}
 
@@ -174,17 +199,19 @@ class SubtitleAutomation:
             files = sorted(library_files(self.roots), key=str)
             current = {media_key(p) for p in files}
             self.data['items'] = {k:v for k,v in self.data['items'].items() if k in current}
-            if keyword:files = [p for p in files if keyword.casefold() in str(p).casefold()]
+            if keyword:files = [p for p in files if self.matches_keyword({**self.data['items'].get(media_key(p),{}),'path':str(p)},keyword)]
             cursor = self.data.get('cursor','')
             # New arrivals first, then the least recently checked files. New
             # media do not wait for a full rotation of an existing large library.
             files.sort(key=lambda p:(media_key(p) in self.data['items'], self.data['items'].get(media_key(p),{}).get('checked_at',-p.stat().st_mtime)))
             limit = max(1,min(100,int(self.config.get('subtitle_batch',25))))
+            self.progress.update(keyword=keyword,matched=len(files),planned=min(len(files),limit))
             auth_notified = bool(self.data.get('auth_notified'));attempts = 0
             for media in files[:limit]:
                 if self._stop.is_set():break
                 key = media_key(media);old = self.data['items'].get(key,{})
                 metadata = media_metadata(media);language = self.original_language(metadata)
+                self.progress['current_title'] = metadata['title']
                 if language in {'zh','zho','chi','cmn','yue','cn'} or language.startswith('zh-'):
                     inspection = {'state':'excluded', 'reason':'TMDB 原始语言为中文，已跳过自动字幕搜索'}
                 elif not language and self.language_resolver:
@@ -212,7 +239,12 @@ class SubtitleAutomation:
             self._save()
         except Exception as error:
             self.data['last_message'] = str(error) if isinstance(error,SubtitleError) else '本轮检查失败，请检查本地影视库与探测工具'
+            self.progress['error'] = self.data['last_message']
         finally:
             self.progress['running'] = False
+            self.progress['finished_at'] = time.time()
+            self.data['last_task'] = dict(self.progress)
+            try:self._save()
+            except OSError:pass
             if lock:lock.close()
             self._lock.release()
