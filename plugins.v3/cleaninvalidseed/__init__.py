@@ -5,6 +5,7 @@ import threading
 import time
 import uuid
 from collections import Counter
+from collections.abc import Sequence
 from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
@@ -140,8 +141,9 @@ class CleanInvalidSeed(_PluginBase):
                     if service.type == "qbittorrent":
                         # TorrentDictionary is a dict, but .trackers performs a separate RPC.
                         trackers = getattr(torrent, "trackers", value(torrent, "trackers", default=[]))
-                        if not isinstance(trackers, (list, tuple)):
+                        if not isinstance(trackers, Sequence) or isinstance(trackers, (str, bytes, bytearray)):
                             raise ValueError("Tracker 清单读取不完整")
+                        trackers = list(trackers)
                     tasks.append(task_record(torrent, service.type, name, files=files, trackers=trackers))
                 available[name] = {"name": name, "type": service.type, "count": len(torrents)}
             except Exception:

@@ -1,10 +1,13 @@
 from copy import deepcopy
+import json
 from types import SimpleNamespace
 import threading
 import time
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
-from qbittorrentapi import TorrentDictionary
+from qbittorrentapi import Client, TorrentDictionary, TrackersList
+import requests
 
 from conftest import core, raw_task
 
@@ -256,7 +259,7 @@ def test_real_qb_dictionary_reads_trackers_explicitly_and_failed_reads_stop_acti
     evidence = {row['hash']: row['trackers'] for row in qb.rows}
     def trackers(*, torrent_hash):
         calls.append(torrent_hash)
-        return evidence[torrent_hash]
+        return TrackersList(evidence[torrent_hash], client)
     client = SimpleNamespace(torrents_trackers=trackers)
     rich = [TorrentDictionary({k: v for k, v in row.items() if k != 'trackers'}, client) for row in qb.rows]
     qb.get_torrents = lambda ids=None: (rich, False)
@@ -269,6 +272,88 @@ def test_real_qb_dictionary_reads_trackers_explicitly_and_failed_reads_stop_acti
     result = plugin.clean_invalid_seed(preview=True)
     assert not result['success'] and not plugin._state['observations'] and not qb.calls
     assert 'private' not in str(plugin.page_data()['last_error'])
+
+
+def test_real_qb_client_builds_info_and_tracker_containers_from_http_responses(runtime, monkeypatch):
+    plugin, qb, *_ = setup(runtime, monkeypatch)
+    evidence = {row['hash']: row['trackers'] for row in qb.rows}
+    calls = []
+    def send(session, request, **kwargs):
+        path = urlsplit(request.url).path
+        calls.append(path)
+        response = requests.Response()
+        response.status_code, response.url = 200, request.url
+        response.headers['Content-Type'] = 'application/json'
+        if path == '/api/v2/torrents/info':
+            data = [{k: v for k, v in row.items() if k != 'trackers'} for row in qb.rows]
+        elif path == '/api/v2/torrents/trackers':
+            body = request.body.decode() if isinstance(request.body, bytes) else request.body
+            data = evidence[parse_qs(body)['hash'][0]]
+        else:
+            raise AssertionError(f'Unexpected request: {path}')
+        response._content = json.dumps(data).encode()
+        return response
+    monkeypatch.setattr(requests.Session, 'send', send)
+    client = Client(host='http://127.0.0.1:65535', FORCE_SCHEME_FROM_HOST=True)
+    assert isinstance(client.torrents_info()[0], TorrentDictionary)
+    calls.clear()
+    qb.get_torrents = lambda ids=None: (client.torrents_info(), False)
+    assert plugin.clean_invalid_seed(preview=True)['success']
+    assert {row['status'] for row in plugin._state['report']['rows']} == {'healthy', 'candidate'}
+    assert calls.count('/api/v2/torrents/info') == 1
+    assert calls.count('/api/v2/torrents/trackers') == len(qb.rows)
+    assert not qb.calls
+
+
+def test_real_empty_tracker_container_keeps_task_unknown_without_failing_inventory(runtime, monkeypatch):
+    plugin, qb, *_ = setup(runtime, monkeypatch)
+    client = SimpleNamespace(torrents_trackers=lambda **kwargs: TrackersList([], client))
+    rich = [TorrentDictionary({k: v for k, v in row.items() if k != 'trackers'}, client) for row in qb.rows]
+    qb.get_torrents = lambda ids=None: (rich, False)
+    result = plugin.clean_invalid_seed(preview=True)
+    assert result['success']
+    assert {row['status'] for row in plugin._state['report']['rows']} == {'unknown'}
+    tasks, _, _ = plugin._inventory(plugin._config, plugin._stop)
+    assert all(task['paths'] for task in tasks)
+    assert not plugin._state['observations'] and not qb.calls
+
+
+@pytest.mark.parametrize('response', [None, '', '[]', b'[]', bytearray(b'[]'), {}, {'trackers': []}])
+def test_invalid_tracker_response_clears_evidence_and_never_performs_configured_actions(runtime, monkeypatch, response):
+    plugin, qb, *_ = setup(runtime, monkeypatch, action='remove')
+    evidence = {row['hash']: row['trackers'] for row in qb.rows}
+    client = SimpleNamespace(torrents_trackers=lambda *, torrent_hash: TrackersList(evidence[torrent_hash], client))
+    rich = [TorrentDictionary({k: v for k, v in row.items() if k != 'trackers'}, client) for row in qb.rows]
+    qb.get_torrents = lambda ids=None: (rich, False)
+    row = ready(plugin, monkeypatch, runtime)
+    client.torrents_trackers = lambda **kwargs: response
+    result = plugin.clean_invalid_seed()
+    assert not result['success'] and not plugin._state['observations'] and not qb.calls
+    assert not plugin.execute(request(plugin, runtime, row))['success']
+
+
+@pytest.mark.parametrize('empty', [False, True])
+def test_tr_only_source_scan_accepts_real_trackers_from_unselected_qb(runtime, monkeypatch, tmp_path, empty):
+    root = (tmp_path / 'sources').resolve(); root.mkdir()
+    (root / 'Used').mkdir(); (root / 'Used' / 'keep.mkv').write_bytes(b'keep')
+    plugin, qb, configs, services = setup(runtime, monkeypatch, downloaders=['TR'],
+                                         detect_invalid_files=True, download_dirs=f'{root}:/downloads/movie')
+    client = SimpleNamespace(torrents_trackers=lambda **kwargs: TrackersList([] if empty else qb.rows[0]['trackers'], client))
+    rich = [TorrentDictionary({**{k: v for k, v in row.items() if k != 'trackers'},
+                              'content_path': '/downloads/movie/Used'}, client) for row in qb.rows]
+    qb.get_torrents = lambda ids=None: (rich, False)
+    raw = SimpleNamespace(hash_string='c' * 40, name='Used', status='seeding', download_dir='/downloads/movie',
+                          added_date='2020-01-01', percent_done=1, seconds_seeding=900000, total_size=100,
+                          labels=[], error=0, tracker_stats=[SimpleNamespace(announce='https://tracker.example/announce',
+                          has_announced=True, last_announce_succeeded=True, last_announce_result='Success')],
+                          get_files=lambda: [SimpleNamespace(name='Used/keep.mkv')])
+    services['TR'] = SimpleNamespace(type='transmission', instance=SimpleNamespace(_trarg=[], trc=SimpleNamespace(get_torrents=lambda **kwargs: [raw])))
+    configs['TR'] = SimpleNamespace(type='transmission', enabled=True)
+    assert plugin.clean_invalid_seed(preview=True)['success']
+    report = plugin._state['report']
+    assert {service['name'] for service in report['services']} == {'QB', 'TR'}
+    assert len(report['rows']) == 1 and report['rows'][0]['service'] == 'TR' and not report['warnings']
+    assert (root / 'Used' / 'keep.mkv').read_bytes() == b'keep' and not qb.calls
 
 
 @pytest.mark.parametrize('days', [0, 5, 30])
