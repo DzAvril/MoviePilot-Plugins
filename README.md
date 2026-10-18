@@ -1,5 +1,9 @@
 # MoviePilot-Plugins
 
+## 极影视助手字幕补全
+
+[极影视助手](./plugins.v3/zvideohelper/README.md)：V3 支持网页授权、按 TMDB 原始语言排除中文作品、定时补全缺少的中文字幕，以及 NAS 同级目录和当前设备两种下载，保留豆瓣同步与评分管理。
+
 ## V3 音乐歌单同步
 
 [音乐歌单同步](./plugins.v3/qqmusicplaylistsync/README.md)：持续同步多个 QQ、网易云公开歌单，新增歌曲立即搜索；保持单曲订阅，从分轨专辑只选所需歌曲，下载和入库状态实时联动。适用于 MoviePilot 3.1.6 及以上 V3 版本。
