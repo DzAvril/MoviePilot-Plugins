@@ -330,7 +330,7 @@ export function createPage(Vue) {
           h('div',{class:'zvh-download-actions'},[h('p',{class:'zvh-muted'},'字幕时间轴可能因发行版本不同而有偏差。'),button(working.value?'处理中…':saveMode.value==='nas'?'保存到 NAS 媒体目录':'下载到当前设备',download,working.value || busy.value || !selectedFile.value || (saveMode.value==='nas' && !destination.value),true)])]),
       ]);
       return () => h('div',{class:'zvh-root'},[
-        h('header',{class:'zvh-header'},[h('div',{class:'zvh-brand'},[h('div',{class:'zvh-brand-icon'},icon('film')),h('div',[h('p',{class:'zvh-kicker'},'极影视助手 · 1.12.0'),h('h2','中文字幕补全'),h('p',{class:'zvh-muted'},'自动补全与手动选择，都在这里。')])]),button('插件设置',()=>emit('switch'))]),
+        h('header',{class:'zvh-header'},[h('div',{class:'zvh-brand'},[h('div',{class:'zvh-brand-icon'},icon('film')),h('div',[h('p',{class:'zvh-kicker'},'极影视助手 · 2.0.0'),h('h2','中文字幕补全'),h('p',{class:'zvh-muted'},'自动补全与手动选择，都在这里。')])]),button('插件设置',()=>emit('switch'))]),
         h('div',{class:'zvh-status'},[h('div',[h('span',{class:['zvh-dot',status.value?.authorized && 'zvh-ready']}),h('span',status.value?.message || '读取授权状态…')]),
           h('div',[button('刷新状态',loadStatus,working.value || libraryBusy.value),button(status.value?.authorized?'重新授权':'网页授权',startAuth,working.value || busy.value || library.value?.running)])]),
         status.value && !status.value.installed && h('section',{class:'zvh-panel zvh-settings'},[
