@@ -9,6 +9,21 @@ automation=importlib.import_module('zvideo_test.automation')
 
 
 class IncrementalLibraryTests(unittest.TestCase):
+    def test_legacy_missing_record_gets_sidecar_evidence_without_reprobing_video(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root,worker=self.setup_worker(folder)
+            video=root/'Movie.mkv';video.touch();video.with_suffix('.srt').write_bytes(b'1\n00:00:01,000 --> 00:00:02,000\nThis is an English subtitle, with enough Latin dialogue for recognition.\n')
+            key=library.media_key(video)
+            worker.data['items'][key]={'id':key,'path':str(video),'title':'Movie','state':'missing','reason':'old reason','fingerprint':library.media_fingerprint(video),'checked_at':1}
+            with patch.object(automation,'inspect_media',side_effect=AssertionError('cached video must not be probed')):
+                self.run_scan(worker)
+            result=worker.snapshot()['items'][0]
+            self.assertEqual(result['state'],'missing');self.assertIn('非中文外挂',result['reason'])
+            self.assertEqual(result['external_subtitles'][0]['name'],'Movie.srt')
+            self.assertEqual((worker.progress['checked'],worker.progress['probed'],worker.progress['evidence_refreshed']),(0,0,1))
+            with patch.object(automation,'external_subtitle_inventory',side_effect=AssertionError('evidence already cached')):self.run_scan(worker)
+            self.assertEqual(worker.progress['evidence_refreshed'],0)
+
     def setup_worker(self,folder,config=None):
         root=Path(folder).resolve()/'media';root.mkdir(exist_ok=True)
         worker=automation.SubtitleAutomation(Path(folder)/'state',None,[root],config or {})

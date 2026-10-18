@@ -53,6 +53,35 @@ class SubtitleServiceTests(unittest.TestCase):
         self.assertFalse(response["success"])
         self.assertNotIn("candidates", response)
 
+    def test_txt_only_resource_reports_actual_unsupported_member_and_caches_it(self):
+        service = subtitles.SubtitleService('/unused', run=lambda args:result([{**ITEM,'sub_title':'Movie 特效字幕'}]))
+        candidate = service.search('Movie')['candidates'][0]
+        with patch.object(service,'_request',return_value={'subs':[{'sub_title':'Movie 特效字幕.txt','download_url':ITEM['download_url']}]}) as request:
+            preview = service.preview(candidate['id'])
+            self.assertEqual(preview['files'],[])
+            self.assertEqual(preview['unsupported_files'],['Movie 特效字幕.txt'])
+            self.assertIn('仅提供 TXT 说明文件',preview['message'])
+            self.assertNotIn('synthetic-private-locator',json.dumps(preview))
+            self.assertEqual(service.preview(candidate['id'])['unsupported_files'],preview['unsupported_files'])
+            self.assertEqual(request.call_count,1)
+
+    def test_malformed_archive_response_is_a_visible_error(self):
+        service = subtitles.SubtitleService('/unused', run=lambda args:result([{**ITEM,'sub_title':'Movie.zip'}]))
+        candidate = service.search('Movie')['candidates'][0]
+        for data in ({'subs':None},{'subs':'bad'},[]):
+            with self.subTest(data=data),patch.object(service,'_request',return_value=data):
+                preview=service.preview(candidate['id'])
+                self.assertFalse(preview['success'])
+                self.assertIn('文件列表异常',preview['message'])
+
+    def test_mixed_pack_keeps_subtitle_downloadable_and_lists_other_files(self):
+        service = subtitles.SubtitleService('/unused', run=lambda args:result([{**ITEM,'sub_title':'Movie.zip'}]))
+        candidate = service.search('Movie')['candidates'][0]
+        with patch.object(service,'_request',return_value={'subs':[{'sub_title':'Movie.chs.ass'},{'sub_title':'readme.txt'}]}):
+            preview=service.preview(candidate['id'])
+        self.assertEqual([f['title'] for f in preview['files']],['Movie.chs.ass'])
+        self.assertEqual(service.preview(preview['files'][0]['id'])['unsupported_files'],[])
+
     def test_malformed_provider_envelope_and_invalid_input_are_rejected(self):
         with self.assertRaises(subtitles.SubtitleError):
             subtitles.project_candidates({"subs": "not-a-list"})

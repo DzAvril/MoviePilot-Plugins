@@ -47,56 +47,69 @@ def chinese_text(data, suffix='.srt'):
     return False
 
 
+SUBTITLE_EVIDENCE_VERSION = 1
+
+
+def external_subtitle_inventory(path):
+    """Describe associated sidecars without exposing their dialogue."""
+    path=Path(path);files=[]
+    for item in sorted(path.parent.iterdir()):
+        if item.suffix.lower() not in SUB or not (item.stem==path.stem or item.stem.startswith(path.stem+'.')):continue
+        chinese=None;basis='语言信息不足'
+        if item.is_symlink() or not item.is_file():basis='文件不可读取'
+        elif chinese_label(item.name):chinese=True;basis='文件名语言标记'
+        elif item.suffix.lower() in TEXT:
+            try:
+                with item.open('rb') as handle:chinese=chinese_text(handle.read(2*1024*1024),item.suffix)
+                basis='字幕正文检查'
+            except OSError:basis='文件不可读取'
+            if chinese is None and FOREIGN.search(item.name):chinese=False;basis='文件名语言标记'
+        elif FOREIGN.search(item.name):chinese=False;basis='文件名语言标记'
+        files.append({'name':item.name,'format':item.suffix.lstrip('.').upper(),'chinese':chinese,
+            'language':'中文' if chinese is True else '非中文' if chinese is False else '语言待确认','basis':basis})
+    return files
+
+
+def missing_subtitle_reason(external):
+    if external:return f'已发现 {len(external)} 个非中文外挂字幕，未发现中文字幕；不识别画面烧录字幕'
+    return '未发现中文外挂或已标注的中文内嵌字幕；不识别画面烧录字幕'
+
+
 def inspect_media(path, probe=None, probe_observer=None):
-    path = Path(path)
+    path=Path(path);details={'external_subtitles':[],'subtitle_evidence_version':SUBTITLE_EVIDENCE_VERSION}
+    def result(state,reason,**extra):return {**details,'state':state,'reason':reason,**extra}
     try:
-        unknown = []
-        for item in path.parent.iterdir():
-            if item.suffix.lower() not in SUB or not (item.stem == path.stem or item.stem.startswith(path.stem + '.')):
-                continue
-            if item.is_symlink() or not item.is_file():
-                unknown.append('外挂字幕不可读取');continue
-            if chinese_label(item.name):
-                return {'state': 'present', 'reason': '已有中文外挂字幕', 'evidence': item.name}
-            if item.suffix.lower() in TEXT:
-                with item.open('rb') as handle:
-                    chinese = chinese_text(handle.read(2 * 1024 * 1024), item.suffix)
-                if chinese is True:
-                    return {'state': 'present', 'reason': '外挂字幕正文包含中文', 'evidence': item.name}
-                if chinese is None and not FOREIGN.search(item.name):unknown.append('外挂字幕语言无法确认')
-            elif not FOREIGN.search(item.name):unknown.append('图形外挂字幕语言未标注')
-        if path.suffix.lower() in {'.strm', '.iso'}:
-            return {'state': 'unknown', 'reason': 'STRM / 原盘需要媒体端轨道信息，当前不自动读取远程视频'}
-        if chinese_label(path.name) or re.search(r'(?i)(?:\bHC\b|硬字幕|内嵌中字|内封中字)', path.name):
+        external=external_subtitle_inventory(path);details['external_subtitles']=external
+        positive=next((f for f in external if f['chinese'] is True),None)
+        if positive:
+            return result('present','已有中文外挂字幕' if positive['basis']=='文件名语言标记' else '外挂字幕正文包含中文',evidence=positive['name'])
+        unknown=['外挂字幕语言无法确认：'+f['name'] for f in external if f['chinese'] is None]
+        if path.suffix.lower() in {'.strm','.iso'}:
+            return result('unknown','STRM / 原盘需要媒体端轨道信息，当前不自动读取远程视频')
+        if chinese_label(path.name) or re.search(r'(?i)(?:\bHC\b|硬字幕|内嵌中字|内封中字)',path.name):
             unknown.append('文件名提示中字，需要确认是否为烧录字幕')
-        if any((path.parent / folder).is_dir() for folder in ('Subs', 'subs', 'Subtitles', 'subtitles')):
+        if any((path.parent/folder).is_dir() for folder in ('Subs','subs','Subtitles','subtitles')):
             unknown.append('存在字幕子目录，需要人工确认关联')
-        if probe:
-            data = probe(path)
+        if probe:data=probe(path)
         else:
-            command = (['nice','-n','10'] if shutil.which('nice') else []) + ['ffprobe', '-v', 'error', '-threads', '1', '-probesize', '8M', '-analyzeduration', '5000000',
-                '-select_streams', 's', '-show_entries', 'stream=index,codec_name:stream_tags=language,title', '-of', 'json', str(path)]
-            started = time.monotonic()
-            try:result = subprocess.run(command, capture_output=True, timeout=25)
+            command=(['nice','-n','10'] if shutil.which('nice') else [])+['ffprobe','-v','error','-threads','1','-probesize','8M','-analyzeduration','5000000',
+                '-select_streams','s','-show_entries','stream=index,codec_name:stream_tags=language,title','-of','json',str(path)]
+            started=time.monotonic()
+            try:response=subprocess.run(command,capture_output=True,timeout=25)
             finally:
                 if probe_observer:probe_observer(time.monotonic()-started)
-            if result.returncode or len(result.stdout) > 1024 * 1024:
-                return {'state': 'unknown', 'reason': '视频字幕轨道探测失败'}
-            data = json.loads(result.stdout)
-        if not isinstance(data.get('streams'), list):
-            return {'state': 'unknown', 'reason': '探测结果没有完整轨道列表'}
+            if response.returncode or len(response.stdout)>1024*1024:return result('unknown','视频字幕轨道探测失败')
+            data=json.loads(response.stdout)
+        if not isinstance(data.get('streams'),list):return result('unknown','探测结果没有完整轨道列表')
         for stream in data['streams']:
-            tags = stream.get('tags') or {}
-            language = str(tags.get('language') or '').lower()
-            title = str(tags.get('title') or '')
-            if language in {'zh', 'zho', 'chi', 'cmn', 'yue'} or language.startswith('zh-') or chinese_label(title) or re.search('(?i)chinese|mandarin|cantonese', title):
-                return {'state': 'present', 'reason': '已有中文内嵌字幕', 'evidence': language or title}
-            if not language or language in {'und', 'unknown'}:
-                unknown.append('内嵌字幕语言未标注')
-        if unknown:return {'state': 'unknown', 'reason': '；'.join(dict.fromkeys(unknown))}
-        return {'state': 'missing', 'reason': '未发现中文外挂或已标注的中文内嵌字幕；不识别画面烧录字幕'}
-    except (OSError, ValueError, subprocess.TimeoutExpired):
-        return {'state': 'unknown', 'reason': '字幕信息无法读取或探测超时'}
+            tags=stream.get('tags') or {};language=str(tags.get('language') or '').lower();title=str(tags.get('title') or '')
+            if language in {'zh','zho','chi','cmn','yue'} or language.startswith('zh-') or chinese_label(title) or re.search('(?i)chinese|mandarin|cantonese',title):
+                return result('present','已有中文内嵌字幕',evidence=language or title)
+            if not language or language in {'und','unknown'}:unknown.append('内嵌字幕语言未标注')
+        if unknown:return result('unknown','；'.join(dict.fromkeys(unknown)))
+        return result('missing',missing_subtitle_reason(external))
+    except (OSError,ValueError,subprocess.TimeoutExpired):
+        return result('unknown','字幕信息无法读取或探测超时')
 
 
 def media_metadata(path, read_nfo=True):

@@ -16,6 +16,29 @@ ENGLISH = b'1\n00:00:01,000 --> 00:00:03,000\nThis is an English subtitle with n
 
 
 class LibraryTests(unittest.TestCase):
+    def test_existing_foreign_srt_is_reported_as_evidence_of_no_chinese(self):
+        with tempfile.TemporaryDirectory() as folder:
+            video=Path(folder)/'黑袋行动 (2025) - 2160p.mkv';video.touch()
+            sidecar=video.with_suffix('.srt');sidecar.write_bytes(ENGLISH)
+            result=library.inspect_media(video,probe=lambda p:{'streams':[]})
+            self.assertEqual(result['state'],'missing')
+            self.assertIn('已发现 1 个非中文外挂字幕',result['reason'])
+            self.assertEqual(result['external_subtitles'],[{'name':sidecar.name,'format':'SRT','chinese':False,'language':'非中文','basis':'字幕正文检查'}])
+            self.assertNotIn('This is an English',json.dumps(result))
+
+    def test_foreign_sidecar_does_not_hide_chinese_embedded_track(self):
+        with tempfile.TemporaryDirectory() as folder:
+            video=Path(folder)/'Movie.mkv';video.touch();video.with_suffix('.srt').write_bytes(ENGLISH)
+            result=library.inspect_media(video,probe=lambda p:{'streams':[{'tags':{'language':'chi'}}]})
+            self.assertEqual(result['state'],'present')
+            self.assertFalse(result['external_subtitles'][0]['chinese'])
+            self.assertEqual(result['evidence'],'chi')
+
+    def test_valid_utf8_latin_text_is_not_redecoded_as_gbk_chinese(self):
+        data=ENGLISH+('é'*10).encode('utf-8')
+        self.assertTrue(any('\u4e00'<=char<='\u9fff' for char in data.decode('gb18030')))
+        self.assertFalse(library.chinese_text(data))
+
     def test_external_chinese_wins_even_when_embedded_only_english(self):
         with tempfile.TemporaryDirectory() as folder:
             video = Path(folder)/'Movie.mkv';video.touch();video.with_suffix('.srt').write_bytes(CHINESE)
@@ -109,8 +132,11 @@ class MatchingAndWriteTests(unittest.TestCase):
     def test_atomic_publish_preserves_existing_subtitle_and_media(self):
         with tempfile.TemporaryDirectory() as folder:
             video=Path(folder)/'Movie.mkv';video.write_bytes(b'original-video')
+            english=video.with_suffix('.srt');english.write_bytes(ENGLISH)
             sub=Path(folder)/'incoming.srt';sub.write_bytes(CHINESE)
             saved=automation.write_sidecar(video,sub)
+            self.assertEqual(saved.name,'Movie.zh.srt')
+            self.assertEqual(english.read_bytes(),ENGLISH)
             sub.write_bytes(b'replacement')
             with self.assertRaises(subtitles.SubtitleError):automation.write_sidecar(video,sub)
             self.assertEqual(saved.read_bytes(),CHINESE);self.assertEqual(video.read_bytes(),b'original-video')

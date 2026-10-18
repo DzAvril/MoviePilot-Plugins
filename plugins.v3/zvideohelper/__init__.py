@@ -44,7 +44,7 @@ class ZvideoHelper(_PluginBase):
     # 插件图标
     plugin_icon = "zvideo.png"
     # 插件版本
-    plugin_version = "1.11.0"
+    plugin_version = "1.12.0"
     # 插件作者
     plugin_author = "DzAvril"
     # 作者主页
@@ -255,7 +255,7 @@ class ZvideoHelper(_PluginBase):
     def get_api(self) -> List[Dict[str, Any]]:
         routes = [("subtitle_series", self.subtitle_series, "GET"), ("subtitle_media_search", self.subtitle_media_search, "GET"), ("subtitle_selected", self.subtitle_selected, "POST"), ("subtitle_status", self.subtitle_status, "GET"), ("subtitle_search", self.subtitle_search, "GET"),
             ("subtitle_preview", self.subtitle_preview, "POST"), ("subtitle_download", self.subtitle_download, "POST"),
-            ("subtitle_file", self.subtitle_file, "GET"), ("subtitle_library", self.subtitle_library, "GET"),
+            ("subtitle_file", self.subtitle_file, "GET"), ("subtitle_library", self.subtitle_library, "GET"), ("subtitle_mark", self.subtitle_mark, "POST"),
             ("subtitle_scan", self.subtitle_scan, "POST"), ("subtitle_scan_cancel", self.subtitle_scan_cancel, "POST"), ("subtitle_destinations", self.subtitle_destinations, "GET"), ("subtitle_auth_start", self.subtitle_auth_start, "POST"),
             ("subtitle_auth_state", self.subtitle_auth_state, "GET"), ("subtitle_tool_install", self.subtitle_tool_install, "POST"), ("subtitle_auth_submit", self.subtitle_auth_submit, "POST")]
         return [{"path":"/"+name, "endpoint":endpoint, "methods":[method], "auth":"bear", "summary":"极影视字幕"} for name,endpoint,method in routes]
@@ -357,6 +357,11 @@ class ZvideoHelper(_PluginBase):
     def subtitle_scan(self, payload: dict = Body(...)):
         if not self._subtitle_enabled:return {"success":False, "message":"请先开启字幕功能"}
         return self._subtitle_automation.start(download=payload.get("download") is True, keyword=payload.get("keyword", ""), force=payload.get('force') is True)
+
+    def subtitle_mark(self, payload: dict = Body(...)):
+        identifier,state=payload.get('media_id'),payload.get('state')
+        if not isinstance(identifier,str) or not isinstance(state,str):return {'success':False,'message':'请选择媒体和人工确认结果'}
+        return self._subtitle_automation.mark(identifier,state)
 
     def subtitle_scan_cancel(self):
         return self._subtitle_automation.cancel()

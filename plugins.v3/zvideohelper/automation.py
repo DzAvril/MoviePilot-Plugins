@@ -8,7 +8,7 @@ import tempfile
 import threading
 import time
 
-from .library import chinese_label, inspect_media, library_files, media_key, media_metadata, media_fingerprint, resolve_roots
+from .library import chinese_label, inspect_media, library_files, media_key, media_metadata, media_fingerprint, resolve_roots, external_subtitle_inventory, missing_subtitle_reason, SUBTITLE_EVIDENCE_VERSION
 from .subtitles import SubtitleError
 
 
@@ -41,7 +41,7 @@ def match_score(metadata, path, title, movie='', imdb_id=''):
 def write_sidecar(media, subtitle):
     """Atomic no-replace publish: an existing subtitle is never overwritten."""
     media, subtitle = Path(media), Path(subtitle)
-    target = media.with_name(media.stem + '.zh.zvideo' + subtitle.suffix.lower())
+    target = media.with_name(media.stem + '.zh' + subtitle.suffix.lower())
     data = subtitle.read_bytes()
     fd, temp = tempfile.mkstemp(prefix='.zvideo-sub-', dir=media.parent)
     try:
@@ -68,6 +68,7 @@ class SubtitleAutomation:
             self.data = data if isinstance(data, dict) and isinstance(data.get('items'), dict) else {}
         except (OSError, ValueError):self.data = {}
         self.data.setdefault('items', {});self.data.setdefault('cursor', '');self.data.setdefault('languages', {})
+        self.data.setdefault('manual_labels', {})
         if language_resolver:
             for item in self.data['items'].values():
                 if item.get('state') == 'missing' and not item.get('original_language'):
@@ -80,7 +81,7 @@ class SubtitleAutomation:
         if state not in {'all','pending','present','missing','unknown','excluded'}:
             return {'success':False,'message':'检查状态无效'}
         keyword = keyword.strip()
-        with self._data_lock:all_items = [dict(i) for i in self.data['items'].values()]
+        with self._data_lock:all_items = [self.effective_item(i) for i in self.data['items'].values()]
         items = [i for i in all_items if self.matches_keyword(i,keyword)]
         counts = {state:sum(i.get('state') == state for i in items) for state in ('pending','present','missing','unknown','excluded')}
         scoped_total = len(items)
@@ -105,8 +106,41 @@ class SubtitleAutomation:
     def matches_keyword(item, keyword):
         return not keyword or keyword.casefold() in (str(item.get('title',''))+' '+str(item.get('path',''))).casefold()
 
+    def effective_item(self, item):
+        result=dict(item)
+        with self._data_lock:label=dict(self.data['manual_labels'].get(item.get('id'),{}))
+        if label.get('state') in {'present','missing'}:
+            result.update(detected_state=item['state'],detected_reason=item.get('reason',''),
+                manual_state=label['state'],manual_at=label['updated_at'],state=label['state'],
+                reason='人工确认已有中文（含硬字幕），已跳过自动补全' if label['state']=='present' else '人工确认缺少中文字幕')
+        return result
+
+    @staticmethod
+    def video_signature(path):
+        value=Path(path).stat()
+        return [value.st_size,value.st_mtime_ns,value.st_ino]
+
+    def mark(self, identifier, state):
+        if state not in {'present','missing','auto'}:return {'success':False,'message':'人工标记无效'}
+        try:
+            media=self.target(identifier)
+            with self._data_lock:
+                if self.data['items'][identifier]['state']=='pending':raise SubtitleError('请等待此文件检查完成后再确认')
+                if state=='auto':
+                    self.data['manual_labels'].pop(identifier,None)
+                    self.data['items'][identifier].pop('attempt_at',None)
+                else:
+                    self.data['manual_labels'][identifier]={'state':state,'updated_at':time.time(),'video_signature':self.video_signature(media)}
+                    if state=='missing':self.data['items'][identifier].pop('attempt_at',None)
+                self._save();item=self.effective_item(self.data['items'][identifier])
+            return {'success':True,'item':item,'message':'已恢复最近一次自动判断，可强制重检更新结果' if state=='auto' else '人工确认已保存，后续扫描会保留'}
+        except (SubtitleError,OSError) as error:return {'success':False,'message':str(error) if isinstance(error,SubtitleError) else '标记保存失败，请检查媒体和插件目录权限'}
+
+    def manual_state(self, identifier):
+        with self._data_lock:return self.data['manual_labels'].get(identifier,{}).get('state')
+
     def destinations(self, tmdb_id, media_type, season=-1, episode=-1):
-        items = [dict(i) for i in self.data['items'].values() if str(i.get('tmdb_id'))==str(tmdb_id)
+        items = [self.effective_item(i) for i in self.data['items'].values() if str(i.get('tmdb_id'))==str(tmdb_id)
             and (i.get('season') is not None)==(media_type=='tv')
             and (season<0 or i.get('season')==season) and (episode<0 or i.get('episode')==episode)]
         return {'success':True,'items':sorted(items,key=lambda i:i['path'])}
@@ -152,21 +186,26 @@ class SubtitleAutomation:
 
     def manual_download(self, file_id, media_id=''):
         try:
+            if media_id and self.manual_state(media_id)=='present':raise SubtitleError('已人工确认有中文（含硬字幕），请恢复自动判断后再保存；仍可下载到当前设备')
             result = self.service.fetch(file_id, self.config.get('subtitle_nas_cache',''))
             if not media_id:return {'success':True, 'ticket':result['ticket'], 'name':result['name']}
             media = self.target(media_id)
             if result['chinese'] is not True:raise SubtitleError('无法确认字幕正文为中文，已阻止自动标注中文；可选择下载到本机查看')
-            if inspect_media(media)['state'] == 'present':raise SubtitleError('媒体已有中文字幕，已保留现有字幕')
+            if self.manual_state(media_id)!='missing' and inspect_media(media)['state'] == 'present':raise SubtitleError('媒体已有中文字幕，已保留现有字幕')
             if self._stop.is_set():raise SubtitleError('插件正在停止，请稍后重试')
-            saved = write_sidecar(media, result['path'])
             with self._data_lock:
-                self.data['items'][media_id].update(state='present', reason='手动下载中文外挂字幕', saved=saved.name, checked_at=time.time(),fingerprint=media_fingerprint(media))
+                if self.manual_state(media_id)=='present':raise SubtitleError('已人工确认有中文（含硬字幕），已停止保存')
+                saved = write_sidecar(media, result['path'])
+                self.data['manual_labels'].pop(media_id,None)
+                self.data['items'][media_id].update(state='present', reason='手动下载中文外挂字幕', saved=saved.name, checked_at=time.time(),fingerprint=media_fingerprint(media),
+                    external_subtitles=external_subtitle_inventory(media),subtitle_evidence_version=SUBTITLE_EVIDENCE_VERSION)
                 self._save()
             return {'success':True, 'message':'已保存到媒体旁边：'+saved.name}
         except (SubtitleError, OSError) as error:
             return {'success':False, 'message':str(error) if isinstance(error,SubtitleError) else '字幕保存失败，请检查目录写入权限'}
 
     def _auto_download(self, item):
+        if self.manual_state(item['id'])=='present':return False
         media = self.target(item['id']);before = media.stat();metadata = media_metadata(media)
         found = self.service.search(metadata['title'], metadata['imdb_id'])
         if not found.get('success'):raise SubtitleError(found.get('message','字幕搜索失败'))
@@ -190,9 +229,13 @@ class SubtitleAutomation:
                 after = media.stat()
                 if (before.st_size,before.st_mtime_ns) != (after.st_size,after.st_mtime_ns):raise SubtitleError('媒体文件正在变化，延后处理')
                 if self._stop.is_set():return False
-                if inspect_media(media)['state'] != 'missing':return False
-                saved = write_sidecar(media, result['path'])
-                item.update(state='present', reason='自动下载中文外挂字幕', saved=saved.name, subtitle=chosen['title'])
+                if self.manual_state(item['id'])!='missing' and inspect_media(media)['state'] != 'missing':return False
+                with self._data_lock:
+                    if self.manual_state(item['id'])=='present':return False
+                    saved = write_sidecar(media, result['path'])
+                    self.data['manual_labels'].pop(item['id'],None)
+                    item.update(state='present', reason='自动下载中文外挂字幕', saved=saved.name, subtitle=chosen['title'],
+                        external_subtitles=external_subtitle_inventory(media),subtitle_evidence_version=SUBTITLE_EVIDENCE_VERSION)
                 return True
         item['reason'] = '未找到可确认影片身份、季集和中文内容的字幕，等待手动选择'
         return False
@@ -225,6 +268,19 @@ class SubtitleAutomation:
         self.progress['probed']+=1
         self.progress['probe_seconds']=round(self.progress['probe_seconds']+elapsed,3)
 
+    def _refresh_external_evidence(self, media, old):
+        if old.get('state') not in {'missing','unknown'} or old.get('subtitle_evidence_version')==SUBTITLE_EVIDENCE_VERSION:return
+        try:external=external_subtitle_inventory(media)
+        except OSError:return
+        refreshed={**old,'external_subtitles':external,'subtitle_evidence_version':SUBTITLE_EVIDENCE_VERSION}
+        positive=next((f for f in external if f['chinese'] is True),None)
+        if positive:refreshed.update(state='present',reason='已有中文外挂字幕',evidence=positive['name'])
+        elif old['state']=='missing':
+            if any(f['chinese'] is None for f in external):refreshed.update(state='unknown',reason='已发现外挂字幕，但语言无法确认；不会自动补全')
+            else:refreshed['reason']=missing_subtitle_reason(external)
+        with self._data_lock:self.data['items'][old['id']]=refreshed
+        self.progress['evidence_refreshed']+=1
+
     def _inspect_one(self, media, fingerprint, old):
         metadata=media_metadata(media);self.progress['current_title']=metadata['title']
         language=self.original_language(metadata)
@@ -243,7 +299,7 @@ class SubtitleAutomation:
     def _run(self, download, keyword="", force=False):
         lock=None;completed=False
         self.progress={'running':True,'checked':0,'downloaded':0,'mode':'检查与补全' if download else '检查',
-            'keyword':keyword,'matched':0,'planned':0,'discovered':0,'skipped':0,'probed':0,'probe_seconds':0,
+            'keyword':keyword,'matched':0,'planned':0,'discovered':0,'skipped':0,'probed':0,'probe_seconds':0,'evidence_refreshed':0,
             'started_at':time.time(),'current_title':'','error':'','phase':'发现文件',
             'scan_type':'强制重检' if force else '增量检查'}
         self._checkpoint_checked=0;self._checkpoint_time=time.monotonic()
@@ -266,6 +322,7 @@ class SubtitleAutomation:
                     if key not in items:items[key]={'id':key,'path':str(media),**media_metadata(media,read_nfo=False),
                         'state':'pending','reason':'已发现文件，等待首次检查','checked_at':0}
                 self.data['items']=items;self.data['catalog_roots']=list(self.roots);self.data['last_inventory']=time.time()
+                self.data['manual_labels']={key:value for key,value in self.data['manual_labels'].items() if key in current}
             if not force and any(not i.get('fingerprint') for i in items.values()):self.progress['scan_type']='首次全量检查'
             scoped=[p for p in files if self.matches_keyword(items[media_key(p)],keyword)]
             self.progress.update(matched=len(scoped),phase='比较文件变化')
@@ -277,10 +334,15 @@ class SubtitleAutomation:
                 except OSError:
                     with self._data_lock:items[key].update(state='unknown',reason='本地文件暂时无法读取，等待后续检查')
                     continue
+                with self._data_lock:
+                    label=self.data['manual_labels'].get(key)
+                    if label and label.get('video_signature')!=self.video_signature(media):self.data['manual_labels'].pop(key,None)
                 if self.needs_check(old,fingerprint,force):
                     queue.append((media,fingerprint,old))
                     with self._data_lock:items[key].update(state='pending',reason='等待检查文件变化' if old.get('fingerprint') else '等待首次检查')
-                else:self.progress['skipped']+=1
+                else:
+                    self._refresh_external_evidence(media,old)
+                    self.progress['skipped']+=1
             self.data['baseline_complete']=all(i.get('fingerprint') and i['state']!='pending' for i in items.values())
             self.progress.update(planned=len(queue),phase='检查字幕')
             self._checkpoint(force=True)
@@ -300,7 +362,11 @@ class SubtitleAutomation:
             if download and not self.interrupted():
                 self.progress['phase']='补全字幕'
                 limit=max(1,min(20,int(self.config.get('subtitle_download_limit',5))))
-                eligible=[dict(items[media_key(p)]) for p in scoped if items[media_key(p)]['state']=='missing'
+                eligible=[dict(items[media_key(p)]) for p in scoped if self.effective_item(items[media_key(p)])['state']=='missing'
+                    and p.suffix.lower() not in {'.strm','.iso'}
+                    and str(items[media_key(p)].get('original_language') or '').lower() not in {'zh','zho','chi','cmn','yue','cn'}
+                    and not str(items[media_key(p)].get('original_language') or '').lower().startswith('zh-')
+                    and (not self.language_resolver or items[media_key(p)].get('original_language'))
                     and time.time()-items[media_key(p)].get('attempt_at',0)>=86400]
                 eligible.sort(key=lambda i:(i.get('attempt_at',0),-i.get('checked_at',0)))
                 for item in eligible[:limit]:

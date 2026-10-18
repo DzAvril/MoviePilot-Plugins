@@ -236,20 +236,25 @@ class SubtitleService:
         try:
             source = self._source(identifier)
             content_cached = False
+            unsupported = []
             if Path(source["sub_title"]).suffix.lower() in TEXT:
                 names = [source["sub_title"]]
                 content_cached = True
             else:
                 archive = self._archive_names.get(identifier)
                 if archive and time.monotonic()-archive[0]<300:
-                    names = archive[1]
+                    names, unsupported = archive[1]
                     content_cached = True
                 else:
                     data = self._request("preview", {k:source[k] for k in ("sub_id", "download_url")})
-                    names = [i["sub_title"] for i in data.get("subs", []) if isinstance(i, dict) and isinstance(i.get("sub_title"), str) and Path(i["sub_title"]).suffix.lower() in TEXT]
-                    if sum(map(len,names))<=250000:
+                    if not isinstance(data, dict) or not isinstance(data.get('subs'), list):
+                        raise SubtitleError('字幕包文件列表异常，请稍后重试或选择其他版本')
+                    members = [i['sub_title'] for i in data['subs'] if isinstance(i, dict) and isinstance(i.get('sub_title'), str) and 0<len(i['sub_title'])<=8192]
+                    names = [name for name in members if Path(name).suffix.lower() in TEXT]
+                    unsupported = [Path(name).name for name in members if Path(name).suffix.lower() not in TEXT]
+                    if sum(map(len,names+unsupported))<=250000:
                         if len(self._archive_names)>=32:self._archive_names.clear()
-                        self._archive_names[identifier]=(time.monotonic(),names)
+                        self._archive_names[identifier]=(time.monotonic(),(names,unsupported))
             if season is not None:
                 names = [name for name in names if episode_matches(name,season,episode,parent=source['sub_title'])]
             if source.get('episode_number') is not None:
@@ -260,7 +265,11 @@ class SubtitleService:
                 self._sources[key] = (time.monotonic(), {**source, "sub_title":name,
                     **({'episode_season':season,'episode_number':episode,'episode_parent':source['sub_title']} if season is not None else {})})
                 files.append({"id":key, "title":name, "chinese_label":chinese_label(name)})
-            result = {"success":True, "files":files, "cached":content_cached, "message":"" if files else "压缩包中没有支持的 SRT / ASS / SSA / VTT 文本字幕"}
+            message = ''
+            if not files:
+                message = ('此资源仅提供 TXT 说明文件，未提供可直接下载的字幕；请选择其他版本' if unsupported and all(Path(name).suffix.lower()=='.txt' for name in unsupported)
+                    else '此资源没有可用的 SRT / ASS / SSA / VTT 文本字幕，请选择其他版本')
+            result = {"success":True, "files":files, "cached":content_cached, "unsupported_files":unsupported[:20], "message":message}
             if len(self._preview_cache)>=64:self._preview_cache.clear()
             self._preview_cache[cache_key]=(time.monotonic(),result)
             return result
