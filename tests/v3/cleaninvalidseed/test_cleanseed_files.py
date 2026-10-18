@@ -27,6 +27,16 @@ def test_shared_nested_file_is_protected_and_orphan_is_reviewed_without_mutation
     assert not (root / files.TRASH).exists()
 
 
+def test_parent_task_protects_entire_mapped_subdirectory_even_with_another_child_task(tmp_path):
+    root, used, orphan, mapping, _ = source(tmp_path)
+    mapping['aliases'] = ['/qb/Pack/Disc1']
+    tasks = [{'service': 'QB', 'paths': ['/qb/Pack']},
+             {'service': 'QB', 'paths': ['/qb/Pack/Disc1/Used/a.mkv']}]
+    rows, warnings = files.inspect_sources([mapping], tasks, core.config_values({}), time.time() + 11 * 86400)
+    assert not rows and not warnings
+    assert (orphan / 'b.mkv').read_bytes() == b'orphan'
+
+
 def test_recent_directory_descendant_and_partial_download_protect_source(tmp_path):
     root, used, orphan, mapping, tasks = source(tmp_path)
     rows, _ = files.inspect_sources([mapping], tasks, core.config_values({}), time.time())
@@ -109,3 +119,24 @@ def test_cancelled_file_move_preserves_source(tmp_path):
     with pytest.raises(ValueError):
         files.move_to_trash(rows[0], "cancelled", stopped=lambda: True)
     assert (orphan / "b.mkv").read_bytes() == b"orphan"
+
+
+@pytest.mark.parametrize('change', ['symlink', 'foreign_target', 'missing_both', 'root_replaced'])
+def test_reconciliation_preserves_uncertain_entries_without_following_or_mutating_them(tmp_path, change):
+    root, used, orphan, mapping, tasks = source(tmp_path)
+    rows, _ = files.inspect_sources([mapping], tasks, core.config_values({}), time.time() + 11 * 86400)
+    entry = {**rows[0], 'id': 'pending', 'trash_path': str(root / files.TRASH / 'pending')}
+    trash = root / files.TRASH
+    if change == 'symlink':
+        outside = tmp_path / 'outside'; outside.mkdir()
+        trash.symlink_to(outside)
+    elif change == 'foreign_target':
+        trash.mkdir(); (trash / 'pending').write_bytes(b'foreign')
+    elif change == 'missing_both':
+        orphan.rename(root / 'elsewhere')
+    else:
+        root.rename(tmp_path / 'previous-root'); root.mkdir()
+    assert files.reconcile_entry(entry) == 'uncertain'
+    if change == 'foreign_target':
+        assert (trash / 'pending').read_bytes() == b'foreign'
+        assert (orphan / 'b.mkv').read_bytes() == b'orphan'

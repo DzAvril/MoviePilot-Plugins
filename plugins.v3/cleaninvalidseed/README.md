@@ -44,6 +44,10 @@
 
 配置和状态沿用 MP 插件数据存储。单进程锁和文件锁防止定时、手动、重载及多进程重复执行；停止或重新保存配置会取消旧的检测。历史最多保留 200 条，单项意图在确认后更新为最终结果。
 
+3.0.3 补齐 PR #63 的复核意见：父目录任务覆盖映射子目录时保护整个 MP 源目录；qBittorrent 在清单采集阶段显式查询 Tracker；宿主表单沿用迁移后的静置天数；停用、删除或改名的下载器可在设置页取消选择。取消选择不会绕过源文件检测对全部配置下载器的核对。
+
+源文件移动在路径与回收区检查通过后、实际重命名前持久化意图。失败、重启及重试时，按根目录身份、源和目标 inode 核对：确认未移动则释放活动记录；确认已移动则保留可恢复条目；无法确认时保留意图供人工检查，不移动或删除内容。
+
 ## API
 
 以下接口均经过 MP 认证；`/page_*` 为同功能的登录用户接口。
@@ -58,6 +62,7 @@ Tracker URL、passkey 和未脱敏的响应不会发送到工作台。GET 接口
 ## 验证
 
 ```sh
+python -m pip install pytest apscheduler qbittorrent-api==2026.6.0
 python -m pytest -q tests/v3/cleaninvalidseed
 npm --prefix plugins.v3/cleaninvalidseed run check
 npm --prefix plugins.v3/cleaninvalidseed run build

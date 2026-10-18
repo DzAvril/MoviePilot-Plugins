@@ -69,6 +69,25 @@ test('invalid settings are rejected before emitting any save', () => {
   }
 });
 
+test('disabled, removed and renamed downloaders can be deselected before choosing a replacement', async () => {
+  const Vue = fakeVue(), events = [];
+  const render = createConfig(Vue).setup({initialConfig: {downloaders: ['Retired', 'Gone']}, pluginId: 'CleanInvalidSeed',
+    api: {get: async () => ({downloaders: [{name: 'Retired', type: 'qbittorrent', enabled: false}, {name: 'Replacement', type: 'qbittorrent', enabled: true}]})}}, {emit: (...args) => events.push(args)});
+  for (const mount of Vue.mounts) await mount();
+  const checkbox = name => {
+    const label = all(render(), n => n.type === 'label' && all(n, child => child.type === 'strong' && child.children === name).length)[0];
+    return all(label, n => n.type === 'input' && n.props.type === 'checkbox')[0];
+  };
+  assert.equal(checkbox('Retired').props.disabled, false);
+  checkbox('Retired').props.onChange({target: {checked: false}});
+  assert.equal(checkbox('Retired').props.disabled, true);
+  assert.ok(checkbox('Gone'));
+  checkbox('Gone').props.onChange({target: {checked: false}});
+  checkbox('Replacement').props.onChange({target: {checked: true}});
+  button(render(), '保存设置').props.onClick();
+  assert.deepEqual(events.find(event => event[0] === 'save')[1].downloaders, ['Replacement']);
+});
+
 test('config ranges support only whole numbers', () => {
   for (const value of ['nan', 'inf', '1.5', '-1', '721']) {
     assert.ok(validateConfig({downloaders: ['TR'], confirmations: 2, grace_hours: value, min_seeding_days: 0, file_min_age_days: 10, max_actions: 10}));

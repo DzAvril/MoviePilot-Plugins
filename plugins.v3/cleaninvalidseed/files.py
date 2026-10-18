@@ -55,6 +55,8 @@ def inspect_sources(mappings, tasks, config, now, stopped=lambda: False):
         try:
             info = root_stat(root)
             protected = mapped_paths(mapping, tasks)
+            if str(root) in protected:
+                continue
             children = sorted(root.iterdir())
         except (ValueError, OSError) as error:
             warnings.append(f"{root}：{error}" if isinstance(error, ValueError) else f"{root}：源目录暂不可读取，已跳过")
@@ -96,7 +98,7 @@ def _move_no_replace(source_fd, source, destination_fd, destination):
         raise OSError(code, os.strerror(code))
 
 
-def move_to_trash(row, entry_id, *, stopped=lambda: False):
+def move_to_trash(row, entry_id, *, stopped=lambda: False, before_move=lambda: None):
     """Use directory descriptors; never overwrite or traverse a substituted root/trash symlink."""
     root = Path(row["root"])
     info = root_stat(root)
@@ -132,6 +134,9 @@ def move_to_trash(row, entry_id, *, stopped=lambda: False):
             raise ValueError("回收区目标已存在")
         if stopped():
             raise ValueError("操作已停止，源文件保留")
+        before_move()
+        if stopped():
+            raise ValueError("操作已停止，源文件保留")
         _move_no_replace(root_fd, name, trash_fd, destination)
         os.fsync(root_fd)
         os.fsync(trash_fd)
@@ -140,6 +145,54 @@ def move_to_trash(row, entry_id, *, stopped=lambda: False):
         if trash_fd is not None:
             os.close(trash_fd)
         os.close(root_fd)
+
+
+def reconcile_entry(entry):
+    """Only resolve an interrupted intent when root, source and destination identities prove it."""
+    root, original = Path(entry["root"]), Path(entry["path"])
+    if original.parent != root or original.name.startswith(".") or Path(entry["trash_path"]) != root / TRASH / entry["id"]:
+        return "uncertain"
+    root_fd = trash_fd = None
+    try:
+        info = root_stat(root)
+        expected_root = (entry["device"], entry["root_inode"])
+        if (info.st_dev, info.st_ino) != expected_root:
+            return "uncertain"
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        root_fd = os.open(root, flags)
+        current = os.fstat(root_fd)
+        if (current.st_dev, current.st_ino) != expected_root:
+            return "uncertain"
+        try:
+            source = os.stat(original.name, dir_fd=root_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            source = None
+        destination = None
+        try:
+            trash_fd = os.open(TRASH, flags, dir_fd=root_fd)
+        except FileNotFoundError:
+            pass
+        else:
+            if os.fstat(trash_fd).st_dev != info.st_dev:
+                return "uncertain"
+            try:
+                destination = os.stat(entry["id"], dir_fd=trash_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+        def matches(item):
+            return item is not None and (item.st_dev, item.st_ino) == (entry["device"], entry["inode"]) and (stat.S_ISREG(item.st_mode) or stat.S_ISDIR(item.st_mode))
+        if matches(source) and destination is None:
+            return "unmoved"
+        if source is None and matches(destination):
+            return "quarantined"
+    except (OSError, ValueError):
+        pass
+    finally:
+        if trash_fd is not None:
+            os.close(trash_fd)
+        if root_fd is not None:
+            os.close(root_fd)
+    return "uncertain"
 
 
 def restore_entry(entry, *, stopped=lambda: False):

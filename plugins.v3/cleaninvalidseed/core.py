@@ -103,9 +103,9 @@ def safe_message(message):
     return re.sub(r"\b[a-fA-F0-9]{24,}\b", "[隐藏]", text)[:300]
 
 
-def tracker_records(torrent, kind):
+def tracker_records(torrent, kind, trackers=None):
     records = []
-    raw = value(torrent, "trackers", default=[]) if kind == "qbittorrent" else value(torrent, "tracker_stats", "trackerStats", default=[])
+    raw = trackers if trackers is not None else (value(torrent, "trackers", default=[]) if kind == "qbittorrent" else value(torrent, "tracker_stats", "trackerStats", default=[]))
     for tracker in raw or []:
         url = value(tracker, "url", "announce", default="")
         try:
@@ -130,7 +130,7 @@ def tracker_records(torrent, kind):
     return records
 
 
-def task_record(torrent, kind, service, *, files=None):
+def task_record(torrent, kind, service, *, files=None, trackers=None):
     tags = value(torrent, "tags", default="") if kind == "qbittorrent" else value(torrent, "labels", default=[])
     tags = [s.strip() for s in tags.split(",")] if isinstance(tags, str) else list(tags or [])
     state = str(value(torrent, "state", "status", default="unknown"))
@@ -160,7 +160,7 @@ def task_record(torrent, kind, service, *, files=None):
             "tags": tags, "category": str(value(torrent, "category", default="")),
             "local_error": kind == "transmission" and value(torrent, "error", default=0) == 3,
             "added": str(value(torrent, "added_on", "added_date", "addedDate", default="")),
-            "paths": paths, "trackers": tracker_records(torrent, kind)}
+            "paths": paths, "trackers": tracker_records(torrent, kind, trackers)}
 
 
 def classify(tasks, config):
@@ -270,6 +270,9 @@ def mapped_paths(mapping, tasks):
                 base = PurePosixPath(alias)
                 if p == base or base in p.parents:
                     paths.add(str(PurePosixPath(mapping["root"]) / p.relative_to(base)))
+                elif p in base.parents:
+                    # A task can own the parent of a mapped disc/subdirectory.
+                    paths.add(mapping["root"])
     if not paths:
         raise ValueError("目录映射没有对应到任何在用任务，无法证明映射正确，已停止源文件检测")
     return paths

@@ -122,3 +122,9 @@ def test_mapping_uses_path_boundaries_and_cross_client_references():
         core.mapped_paths(mapping, [{"service": "QB", "paths": []}])
     with pytest.raises(ValueError):
         core.mapped_paths(mapping, [])
+
+
+@pytest.mark.parametrize('parent', ['/qb/Pack', '/mp'])
+def test_ancestor_content_reference_alone_proves_and_protects_the_mapping(parent):
+    mapping = core.parse_mappings('/mp/collection:/qb/Pack/Disc1')[0]
+    assert core.mapped_paths(mapping, [{'service': 'QB', 'paths': [parent]}]) == {'/mp/collection'}
