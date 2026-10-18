@@ -82,4 +82,4 @@ jobs:
           fi
           gh release create "$tag" "cleaninvalidseed_v${PLUGIN_VERSION}.zip" \
             --target "$COMMIT_SHA" --title "清理无效做种 ${PLUGIN_VERSION}" \
-            --notes '修复父目录任务的源文件保护、真实 qBittorrent Tracker 读取、静置天数迁移及失效下载器取消选择；回收意图在重命名前持久化，失败与启动后核对源和目标身份。升级默认只预览，源文件移动始终需手动确认。'
+            --notes '明确复选框不可选原因、观察期和重新检测入口；实时更新结果有效期，并阻止过期确认窗口提交。原有观察和执行前复核规则保留，升级沿用已有配置。'

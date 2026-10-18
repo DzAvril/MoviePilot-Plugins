@@ -34,12 +34,13 @@
   "CleanInvalidSeed": {
     "name": "清理无效做种",
     "description": "持续复核失效种子，保护跨下载器做种；源文件清理可预览、可恢复。",
-    "version": "3.0.3",
+    "version": "3.0.4",
     "author": "DzAvril",
     "level": 1,
     "system_version": ">=3.1.6,<4",
     "icon": "https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/a06b2f2a7916a9e492fdf5b0a25e30a38ca28127/icons/CleanInvalidSeed-3.0.2.png",
     "history": {
+      "v3.0.4": "明确复选框不可选原因、观察期和重新检测入口；实时更新结果有效期，并阻止过期确认窗口提交。",
       "v3.0.3": "修复父目录任务的源文件保护、真实 qBittorrent Tracker 采集、旧配置静置天数迁移、失效下载器取消选择及失败回收意图核对。",
       "v3.0.2": "更换蓝绿色循环复核图标，统一插件列表、复核工作台和设置页的图标展示。",
       "v3.0.1": "补齐旧配置空值兼容、累计做种字段单位、轻量状态刷新和无覆盖恢复；通过 Linux 回收恢复与真实大规模任务预览验证。",

@@ -102,7 +102,7 @@ async function pageFixture(overrides = {}) {
   const render = createPage(Vue).setup({api, pluginId: 'CleanInvalidSeed'}, {emit: () => {}});
   for (const fn of Vue.mounts) await fn();
   await new Promise(resolve => setImmediate(resolve));
-  return {render, calls, close: () => Vue.unmounts.forEach(fn => fn())};
+  return {render, calls, state, close: () => Vue.unmounts.forEach(fn => fn())};
 }
 
 test('destructive action needs selected ready rows and exact confirmation text', async () => {
@@ -130,6 +130,65 @@ test('expired evidence and a busy operation disable every selection', async () =
     try {assert.equal(all(fixture.render(), n => n.type === 'input' && n.props.type === 'checkbox')[0].props.disabled, true);}
     finally {fixture.close();}
   }
+});
+
+test('waiting candidates explain the observation window and disable empty bulk selection', async () => {
+  const fixture = await pageFixture({config: {action: 'preview', confirmations: 2}, report: {scan_id: 'waiting', at: Date.now() / 1000,
+    rows: [{id: 'wait', name: '观察中', kind: 'torrent', status: 'candidate', ready: false, observations: 2, ready_at: Date.now() / 1000 + 3600}]}});
+  try {
+    const tree = fixture.render(), checkbox = all(tree, n => n.props.type === 'checkbox')[0];
+    assert.equal(checkbox.props.disabled, true);
+    assert.match(checkbox.props.title, /已观察 2\/2 次；观察期未结束/);
+    assert.equal(checkbox.props['aria-describedby'], 'cis-row-block-wait');
+    assert.ok(all(tree, n => n.props.id === 'cis-row-block-wait' && n.children.includes('后重新检测')).length);
+    assert.equal(button(tree, '选择本页可处理项').props.disabled, true);
+    assert.equal(fixture.calls.length, 0);
+  } finally {fixture.close();}
+});
+
+test('stale plans show the recovery action while refresh only loads stored results', async () => {
+  const fixture = await pageFixture();
+  try {
+    fixture.state.report.at -= 601;
+    await button(fixture.render(), '刷新结果').props.onClick();
+    const tree = fixture.render(), checkbox = all(tree, n => n.props.type === 'checkbox')[0];
+    assert.equal(checkbox.props.disabled, true);
+    assert.match(checkbox.props.title, /超过 10 分钟/);
+    assert.match(all(tree, n => n.props.id === 'cis-plan-block')[0].children, /只读检测.*刷新结果/);
+    assert.equal(fixture.calls.length, 0);
+    await button(tree, '只读检测').props.onClick();
+    assert.equal(fixture.calls[0].path, 'plugin/CleanInvalidSeed/page_scan');
+  } finally {fixture.close();}
+});
+
+test('a confirmation left open across plan expiry cannot submit an action', async () => {
+  const fixture = await pageFixture(), originalNow = Date.now, start = originalNow();
+  try {
+    all(fixture.render(), n => n.props.type === 'checkbox')[0].props.onChange();
+    button(fixture.render(), '移除任务 · 保留文件').props.onClick();
+    all(fixture.render(), n => n.props['aria-label'] === '确认文字')[0].props.onInput({target: {value: '移除任务并保留文件'}});
+    assert.equal(button(fixture.render(), '确认执行').props.disabled, false);
+    Date.now = () => start + 601000;
+    await button(fixture.render(), '确认执行').props.onClick();
+    assert.equal(fixture.calls.length, 0);
+    assert.equal(all(fixture.render(), n => n.props.role === 'dialog').length, 0);
+    assert.equal(button(fixture.render(), '移除任务 · 保留文件').props.disabled, true);
+  } finally {Date.now = originalNow; fixture.close();}
+});
+
+test('fresh eligible rows can be selected and new scans clear old selections', async () => {
+  const fixture = await pageFixture();
+  try {
+    const checkbox = all(fixture.render(), n => n.props.type === 'checkbox')[0];
+    assert.equal(checkbox.props.disabled, false);
+    assert.equal(checkbox.props.title, '');
+    checkbox.props.onChange();
+    assert.equal(all(fixture.render(), n => n.props.type === 'checkbox')[0].props.checked, true);
+    assert.equal(button(fixture.render(), '标记任务').props.disabled, false);
+    await button(fixture.render(), '只读检测').props.onClick();
+    assert.equal(all(fixture.render(), n => n.props.type === 'checkbox')[0].props.checked, false);
+    assert.deepEqual(fixture.calls.map(c => c.path), ['plugin/CleanInvalidSeed/page_scan']);
+  } finally {fixture.close();}
 });
 
 test('read only button invokes only the scan route even with automatic removal configured', async () => {
