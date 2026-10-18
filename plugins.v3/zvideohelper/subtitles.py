@@ -15,7 +15,7 @@ import tempfile
 
 from .library import TEXT, chinese_text, chinese_label, decode_text
 from .authorization import BrowserAuthorization
-from .selection import selected_candidates
+from .selection import selected_candidates, episode_matches, may_contain_episode
 
 
 class SubtitleError(Exception):
@@ -71,6 +71,10 @@ class SubtitleService:
         self._cache = {}
         self._sources = {}
         self._downloads = {}
+        self._preview_cache = {}
+        self._archive_names = {}
+        self._episode_cache = {}
+        self._episode_lock = threading.Lock()
         self.authorization = BrowserAuthorization(self.root)
         self.auth_failed = False
 
@@ -161,6 +165,45 @@ class SubtitleService:
         return {'success':True, 'selected_media':media, 'candidates':[], 'count':0, 'queries':attempts,
             'message':'未找到能确认属于所选作品的字幕；可核对年份或选择其他作品'}
 
+    def search_episode(self, media, season, episode):
+        key = (media['id'],season,episode)
+        cached = self._episode_cache.get(key)
+        if cached and time.monotonic()-cached[0] < 300 and all(c['id'] in self._sources for c in cached[1]['candidates']):
+            return {**cached[1], 'cached':True}
+        if not self._episode_lock.acquire(blocking=False):return {'success':False,'message':'已有单集字幕查询正在进行，请稍后重试'}
+        try:
+            response = self.search_selected(media)
+            if not response.get('success'):return response
+            matched, seen = [], set();checked = failed = 0;started = time.monotonic()
+            for candidate in response.get('candidates',[]):
+                if not may_contain_episode(candidate['title'],season,episode):continue
+                if Path(candidate['title']).suffix.lower() in TEXT:
+                    if episode_matches(candidate['title'],season,episode):matched.append(candidate)
+                    continue
+                if checked >= 20 or time.monotonic()-started > 90:
+                    failed += 1;continue
+                preview = self.preview(candidate['id'],season,episode);checked += not preview.get('cached',False)
+                if not preview.get('success'):
+                    if self.auth_failed:return preview
+                    failed += 1;continue
+                for file in preview.get('files',[]):
+                    if not episode_matches(file['title'],season,episode,parent=candidate['title']):continue
+                    source = self._source(file['id']);identity = (source['sub_id'],file['title'])
+                    if identity in seen:continue
+                    seen.add(identity)
+                    source.update(episode_season=season,episode_number=episode,episode_parent=candidate['title'])
+                    matched.append({**candidate,'id':file['id'],'title':file['title'],
+                        'format':Path(file['title']).suffix.lstrip('.').upper(),'archive_title':candidate['title']})
+            result = {**response,'candidates':matched,'count':len(matched),'season':season,'episode':episode,
+                'checked_archives':checked,'archive_warning':f'{failed} 个字幕包未能完成核对，未混入结果；可再次查询重试' if failed else '',
+                'message':'' if matched else '未找到能确认属于所选集的字幕；季集不明的条目未展示'}
+            if not failed:
+                if len(self._episode_cache)>=16:self._episode_cache.clear()
+                self._episode_cache[key]=(time.monotonic(),result)
+            return result
+        except SubtitleError as error:return {'success':False,'message':str(error)}
+        finally:self._episode_lock.release()
+
     def _remember(self, data, candidates):
         lookup = {(str(i.get("sub_id") or ""), unescape(str(i.get("sub_title") or ""))): (i, g)
                   for g in data.get("subs", []) if isinstance(g, dict) for i in g.get("subs", []) if isinstance(i, dict)}
@@ -183,21 +226,43 @@ class SubtitleService:
         return self._run([sys.executable, str(Path(__file__).with_name("subtitle_cli.py")), "--original-bin", str(self.root / "zspace-cli"),
                           "nas-subtitle-request", operation], payload=params).get("data", {})
 
-    def preview(self, identifier):
+    def preview(self, identifier, season=None, episode=None):
+        cache_key = identifier if season is None else (identifier,season,episode)
+        cached = self._preview_cache.get(cache_key)
+        if cached and time.monotonic()-cached[0] < 300 and all(f['id'] in self._sources for f in cached[1]['files']):
+            return {**cached[1], 'cached':True}
         if not self._lock.acquire(blocking=False):return {"success":False, "message":"字幕服务正忙，请稍后重试"}
         try:
             source = self._source(identifier)
+            content_cached = False
             if Path(source["sub_title"]).suffix.lower() in TEXT:
                 names = [source["sub_title"]]
+                content_cached = True
             else:
-                data = self._request("preview", {k:source[k] for k in ("sub_id", "download_url")})
-                names = [i["sub_title"] for i in data.get("subs", []) if isinstance(i, dict) and isinstance(i.get("sub_title"), str) and Path(i["sub_title"]).suffix.lower() in TEXT]
+                archive = self._archive_names.get(identifier)
+                if archive and time.monotonic()-archive[0]<300:
+                    names = archive[1]
+                    content_cached = True
+                else:
+                    data = self._request("preview", {k:source[k] for k in ("sub_id", "download_url")})
+                    names = [i["sub_title"] for i in data.get("subs", []) if isinstance(i, dict) and isinstance(i.get("sub_title"), str) and Path(i["sub_title"]).suffix.lower() in TEXT]
+                    if sum(map(len,names))<=250000:
+                        if len(self._archive_names)>=32:self._archive_names.clear()
+                        self._archive_names[identifier]=(time.monotonic(),names)
+            if season is not None:
+                names = [name for name in names if episode_matches(name,season,episode,parent=source['sub_title'])]
+            if source.get('episode_number') is not None:
+                names = [name for name in names if episode_matches(name,source['episode_season'],source['episode_number'],parent=source.get('episode_parent',''))]
             files = []
             for name in names[:300]:
                 key = secrets.token_urlsafe(20)
-                self._sources[key] = (time.monotonic(), {**source, "sub_title":name})
+                self._sources[key] = (time.monotonic(), {**source, "sub_title":name,
+                    **({'episode_season':season,'episode_number':episode,'episode_parent':source['sub_title']} if season is not None else {})})
                 files.append({"id":key, "title":name, "chinese_label":chinese_label(name)})
-            return {"success":True, "files":files, "message":"" if files else "压缩包中没有支持的 SRT / ASS / SSA / VTT 文本字幕"}
+            result = {"success":True, "files":files, "cached":content_cached, "message":"" if files else "压缩包中没有支持的 SRT / ASS / SSA / VTT 文本字幕"}
+            if len(self._preview_cache)>=64:self._preview_cache.clear()
+            self._preview_cache[cache_key]=(time.monotonic(),result)
+            return result
         except SubtitleError as error:return {"success":False, "message":str(error)}
         finally:self._lock.release()
 

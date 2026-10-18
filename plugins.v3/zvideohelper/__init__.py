@@ -4,13 +4,14 @@ import json
 from .DoubanHelper import DoubanHelper
 from .subtitles import SubtitleService, SubtitleError
 from .automation import SubtitleAutomation
-from .selection import validate_lookup, project_media, project_media_choices
+from .selection import validate_lookup, project_media, project_media_choices, project_seasons, project_episodes
 from fastapi import Body, File, UploadFile
 from .tool_install import install_tool
 from fastapi.responses import FileResponse
 from app.helper.directory import DirectoryHelper
 from app.chain.media import MediaChain
 from app.domain.metainfo import MetaInfo
+from app.modules.themoviedb.tmdbapi import TmdbApi
 from itertools import zip_longest
 from app.schemas.types import MediaSource, MediaType
 from enum import Enum
@@ -42,7 +43,7 @@ class ZvideoHelper(_PluginBase):
     # 插件图标
     plugin_icon = "zvideo.png"
     # 插件版本
-    plugin_version = "1.9.1"
+    plugin_version = "1.9.2"
     # 插件作者
     plugin_author = "DzAvril"
     # 作者主页
@@ -77,6 +78,7 @@ class ZvideoHelper(_PluginBase):
         self.stop_service()
         self._subtitle_enabled = (config or {}).get("subtitle_enabled", True)
         self._subtitle_config = {k:v for k,v in (config or {}).items() if k.startswith("subtitle_")}
+        self._subtitle_series_cache = {}
         self._subtitle_service = SubtitleService(self.get_data_path() / "subtitle-cli")
 
         if config:
@@ -250,7 +252,7 @@ class ZvideoHelper(_PluginBase):
                             )
 
     def get_api(self) -> List[Dict[str, Any]]:
-        routes = [("subtitle_media_search", self.subtitle_media_search, "GET"), ("subtitle_selected", self.subtitle_selected, "POST"), ("subtitle_status", self.subtitle_status, "GET"), ("subtitle_search", self.subtitle_search, "GET"),
+        routes = [("subtitle_series", self.subtitle_series, "GET"), ("subtitle_media_search", self.subtitle_media_search, "GET"), ("subtitle_selected", self.subtitle_selected, "POST"), ("subtitle_status", self.subtitle_status, "GET"), ("subtitle_search", self.subtitle_search, "GET"),
             ("subtitle_preview", self.subtitle_preview, "POST"), ("subtitle_download", self.subtitle_download, "POST"),
             ("subtitle_file", self.subtitle_file, "GET"), ("subtitle_library", self.subtitle_library, "GET"),
             ("subtitle_scan", self.subtitle_scan, "POST"), ("subtitle_auth_start", self.subtitle_auth_start, "POST"),
@@ -280,6 +282,30 @@ class ZvideoHelper(_PluginBase):
         except Exception:
             return {"success":False, "message":"影视资料查询暂不可用，请检查 MoviePilot 的 TMDB 连接后重试"}
 
+    def subtitle_series(self, tmdb_id: str = "", season: int = -1):
+        if not self._subtitle_enabled:return {"success":False,"message":"请先开启字幕功能"}
+        if not tmdb_id.isascii() or not tmdb_id.isdigit() or not 1 <= len(tmdb_id) <= 12 or int(tmdb_id)<=0 or not -1 <= season <= 999:
+            return {"success":False,"message":"请从列表选择电视剧和季"}
+        key = (tmdb_id,season);cached = self._subtitle_series_cache.get(key)
+        if cached and time.monotonic()-cached[0]<600:return cached[1]
+        try:
+            details = MediaChain().recognize_media(media_source=MediaSource.TMDB, media_id=tmdb_id, mtype=MediaType.TV)
+            media = project_media(details) if details else None
+            if not media or media['id']!=tmdb_id or media['media_type']!='tv':return {"success":False,"message":"无法读取该剧资料，请稍后重试"}
+            seasons = project_seasons(details)
+            if not seasons:return {"success":False,"message":"TMDB 尚未提供该剧季集资料"}
+            if season>=0 and season not in {s['number'] for s in seasons}:return {"success":False,"message":"所选季不在该剧的季列表中"}
+            episodes = []
+            if season>=0:
+                data = TmdbApi().get_tv_season_detail(int(tmdb_id),season)
+                episodes = project_episodes(data,season)
+                if not episodes:return {"success":False,"message":"该季暂无可用集列表，请选择其他季或稍后重试"}
+            result = {"success":True,"selected_media":media,"seasons":seasons,"season":season,"episodes":episodes}
+            if len(self._subtitle_series_cache)>=64:self._subtitle_series_cache.clear()
+            self._subtitle_series_cache[key]=(time.monotonic(),result)
+            return result
+        except Exception:return {"success":False,"message":"季集资料查询失败，请检查 TMDB 连接后重试"}
+
     def subtitle_selected(self, payload: dict = Body(...)):
         if not self._subtitle_enabled:return {"success":False, "message":"请先开启字幕功能"}
         identifier, kind = str(payload.get('tmdb_id') or ''), payload.get('media_type')
@@ -292,6 +318,16 @@ class ZvideoHelper(_PluginBase):
         except Exception:media = None
         if not media or media['id'] != identifier or media['media_type'] != kind:
             return {"success":False, "message":"无法读取所选作品资料，请重新选择或稍后重试"}
+        if kind == 'tv':
+            season, episode = payload.get('season'), payload.get('episode')
+            if type(season) is not int or type(episode) is not int or not 0<=season<=999 or not 1<=episode<=9999:
+                return {"success":False,"message":"请先选择季和集，再查询本集字幕"}
+            catalog = self.subtitle_series(identifier,season)
+            if not catalog.get('success'):return catalog
+            selected = next((ep for ep in catalog['episodes'] if ep['number']==episode),None)
+            if not selected:return {"success":False,"message":"所选集不在该季的集列表中"}
+            media.update(season=season,episode=episode,episode_title=selected['name'])
+            return self._subtitle_service.search_episode(media,season,episode)
         return self._subtitle_service.search_selected(media)
 
     def subtitle_preview(self, payload: dict = Body(...)):

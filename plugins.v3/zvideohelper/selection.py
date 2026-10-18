@@ -53,3 +53,76 @@ def selected_candidates(candidates, media):
         if not year or year not in group + ' ' + str(candidate.get('title') or ''):continue
         matched.append(candidate)
     return matched
+
+
+def _number(value):
+    if isinstance(value, int) and not isinstance(value, bool):return value
+    text = str(value or '')
+    if text.isascii() and text.isdigit():return int(text)
+    digits = dict(zip('零〇一二两三四五六七八九', (0,0,1,2,2,3,4,5,6,7,8,9)))
+    if text in digits:return digits[text]
+    if text.count('十') == 1:
+        tens, units = text.split('十')
+        if tens in digits or not tens:
+            if units in digits or not units:return digits.get(tens,1)*10 + digits.get(units,0)
+    return None
+
+
+def season_numbers(title):
+    text = str(title or '')
+    numbers = {int(v) for v in re.findall(r'(?i)(?<![a-z])S(\d{1,3})(?=E\d|[ ._\-]|$)',text)}
+    numbers.update(int(v) for v in re.findall(r'(?i)S(\d{1,3})[ ._-]*E\d',text))
+    numbers.update(int(v) for v in re.findall(r'(?i)Season[ ._-]*(\d{1,3})(?!\d)',text))
+    numbers.update(int(v) for v in re.findall(r'(?i)(?<!\d)(\d{1,3})x\d{1,4}(?!\d)',text))
+    numbers.update(n for v in re.findall(r'第([零〇一二两三四五六七八九十\d]+)季',text) if (n := _number(v)) is not None)
+    for a,b in re.findall(r'(?i)S(\d{1,3})\s*[-~至]\s*S?(\d{1,3})(?!\d)',text):
+        if 0 <= int(b)-int(a) <= 100:numbers.update(range(int(a),int(b)+1))
+    return numbers
+
+
+def episode_numbers(title):
+    text = str(title or '')
+    numbers = {int(v) for v in re.findall(r'(?i)(?:E|EP(?:ISODE)?[ ._-]*)(\d{1,4})(?!\d)',text)}
+    numbers.update(int(v) for v in re.findall(r'(?i)(?<!\d)\d{1,3}x(\d{1,4})(?!\d)',text))
+    numbers.update(n for v in re.findall(r'第([零〇一二两三四五六七八九十\d]+)(?:集|话|話)',text) if (n := _number(v)) is not None)
+    for a,b in re.findall(r'(?i)E(\d{1,4})\s*[-~至]\s*E?(\d{1,4})(?!\d)',text):
+        if 0 <= int(b)-int(a) <= 500:numbers.update(range(int(a),int(b)+1))
+    # Number-only archive members are accepted only with a known parent season.
+    base = text.rsplit('/',1)[-1]
+    match = re.fullmatch(r'(?i)(\d{1,4})(?:[._ -](?:chs|cht|zh|en|eng))?\.(?:srt|ass|ssa|vtt)',base)
+    if match:numbers.add(int(match[1]))
+    return numbers
+
+
+def episode_matches(title, season, episode, parent=''):
+    seasons = season_numbers(title) or season_numbers(parent)
+    episodes = episode_numbers(title) or episode_numbers(parent)
+    return seasons == {season} and episodes == {episode}
+
+
+def may_contain_episode(title, season, episode):
+    seasons, episodes = season_numbers(title), episode_numbers(title)
+    return (not seasons or season in seasons) and (not episodes or episode in episodes)
+
+
+def project_seasons(record):
+    get = record.get if isinstance(record,dict) else lambda key,default=None:getattr(record,key,default)
+    info = get('season_info') or (get('tmdb_info') or {}).get('seasons') or []
+    seasons = {}
+    for row in info:
+        if not isinstance(row,dict):continue
+        number = _number(row.get('season_number'))
+        if number is None or not 0 <= number <= 999:continue
+        seasons[number] = {'number':number,'name':str(row.get('name') or ('特别篇' if number==0 else f'第 {number} 季')),
+            'episode_count':_number(row.get('episode_count')) or 0,'air_date':str(row.get('air_date') or '')}
+    return [seasons[k] for k in sorted(seasons)]
+
+
+def project_episodes(data, season):
+    episodes = {}
+    for row in data.get('episodes',[]) if isinstance(data,dict) else []:
+        if not isinstance(row,dict):continue
+        number = _number(row.get('episode_number'))
+        if number is None or not 1 <= number <= 9999 or _number(row.get('season_number',season)) != season:continue
+        episodes[number] = {'number':number,'name':str(row.get('name') or f'第 {number} 集'),'air_date':str(row.get('air_date') or '')}
+    return [episodes[k] for k in sorted(episodes)]
