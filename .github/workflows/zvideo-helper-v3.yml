@@ -1,0 +1,70 @@
+name: Zvideo Helper V3
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'plugins.v3/zvideohelper/**'
+      - 'tests/v3/zvideohelper/**'
+      - 'package.v3.json'
+      - '.github/scripts/check_plugin_versions.py'
+      - '.github/scripts/check_federation_css.py'
+      - '.github/workflows/zvideo-helper-v3.yml'
+  pull_request:
+    paths:
+      - 'plugins.v3/zvideohelper/**'
+      - 'tests/v3/zvideohelper/**'
+      - 'package.v3.json'
+      - '.github/scripts/check_plugin_versions.py'
+      - '.github/scripts/check_federation_css.py'
+      - '.github/workflows/zvideo-helper-v3.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: python -m compileall -q plugins.v3/zvideohelper
+      - run: python -m unittest discover -s tests/v3/zvideohelper -v
+      - run: python .github/scripts/check_plugin_versions.py package.v3.json
+      - name: Check this V3 plugin's federation assets
+        run: |
+          mkdir -p "$RUNNER_TEMP/zvideo-plugin-gate/plugins.v3"
+          cp package.v3.json "$RUNNER_TEMP/zvideo-plugin-gate/"
+          cp -R plugins.v3/zvideohelper "$RUNNER_TEMP/zvideo-plugin-gate/plugins.v3/"
+          python .github/scripts/check_federation_css.py --root "$RUNNER_TEMP/zvideo-plugin-gate"
+      - run: node plugins.v3/zvideohelper/frontend/build.mjs
+      - run: git diff --exit-code -- plugins.v3/zvideohelper/dist
+      - run: git diff --check
+      - name: Build standard plugin release asset
+        id: version
+        run: |
+          python - <<'PY'
+          import json, os, zipfile
+          from pathlib import Path
+          version = json.loads(Path('package.v3.json').read_text())['ZvideoHelper']['version']
+          root = Path('plugins.v3')
+          with zipfile.ZipFile(f'zvideohelper_v{version}.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
+              for path in sorted((root/'zvideohelper').rglob('*')):
+                  if path.is_file() and '__pycache__' not in path.parts and not path.name.startswith('._'):
+                      archive.write(path, path.relative_to(root))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'version={version}\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zvideo-helper-plugin
+          path: zvideohelper_v*.zip
+
