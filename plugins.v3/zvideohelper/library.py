@@ -4,7 +4,9 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
+import time
 import xml.etree.ElementTree as ET
 
 VIDEO = {'.mkv', '.mp4', '.avi', '.mov', '.m4v', '.ts', '.wmv', '.strm', '.iso'}
@@ -45,7 +47,7 @@ def chinese_text(data, suffix='.srt'):
     return False
 
 
-def inspect_media(path, probe=None):
+def inspect_media(path, probe=None, probe_observer=None):
     path = Path(path)
     try:
         unknown = []
@@ -72,9 +74,12 @@ def inspect_media(path, probe=None):
         if probe:
             data = probe(path)
         else:
-            result = subprocess.run(['ffprobe', '-v', 'error', '-probesize', '8M', '-analyzeduration', '5000000',
-                '-select_streams', 's', '-show_entries', 'stream=index,codec_name:stream_tags=language,title', '-of', 'json', str(path)],
-                capture_output=True, timeout=25)
+            command = (['nice','-n','10'] if shutil.which('nice') else []) + ['ffprobe', '-v', 'error', '-threads', '1', '-probesize', '8M', '-analyzeduration', '5000000',
+                '-select_streams', 's', '-show_entries', 'stream=index,codec_name:stream_tags=language,title', '-of', 'json', str(path)]
+            started = time.monotonic()
+            try:result = subprocess.run(command, capture_output=True, timeout=25)
+            finally:
+                if probe_observer:probe_observer(time.monotonic()-started)
             if result.returncode or len(result.stdout) > 1024 * 1024:
                 return {'state': 'unknown', 'reason': '视频字幕轨道探测失败'}
             data = json.loads(result.stdout)
@@ -94,7 +99,7 @@ def inspect_media(path, probe=None):
         return {'state': 'unknown', 'reason': '字幕信息无法读取或探测超时'}
 
 
-def media_metadata(path):
+def media_metadata(path, read_nfo=True):
     path = Path(path)
     title = re.split(r'(?i)[ ._-]S\d{1,2}E\d{1,3}|[ ._(](?:19|20)\d{2}', path.stem)[0].replace('.', ' ').strip()
     data = {'title': title, 'imdb_id': '', 'tmdb_id': '', 'original_language': '', 'year': '', 'season': None, 'episode': None}
@@ -102,6 +107,7 @@ def media_metadata(path):
     if episode:data.update(season=int(episode[1]), episode=int(episode[2]))
     year = re.search(r'\b((?:19|20)\d{2})\b', str(path.parent.name))
     if year:data['year'] = year[1]
+    if not read_nfo:return data
     nfos = [path.with_suffix('.nfo'), path.parent / 'movie.nfo']
     if episode:nfos += [parent / 'tvshow.nfo' for parent in list(path.parents)[:3]]
     for nfo in nfos:
@@ -124,12 +130,16 @@ def media_metadata(path):
     return data
 
 
-def library_files(roots):
+def library_files(roots, strict=False):
     """Deterministic walk; no symlink traversal or network storage."""
     for folder in sorted(set(map(str, roots))):
         root = Path(folder).resolve()
-        if str(root) == '/' or not root.is_dir():continue
-        for directory, dirs, files in os.walk(root, followlinks=False):
+        if str(root) == '/' or not root.is_dir():
+            if strict:raise OSError('影视目录不可读取')
+            continue
+        def fail(error):
+            if strict:raise error
+        for directory, dirs, files in os.walk(root, followlinks=False, onerror=fail):
             dirs[:] = sorted(d for d in dirs if not d.startswith('.') and d not in {'BDMV', 'CERTIFICATE', 'VIDEO_TS', '@eaDir'} and not (Path(directory) / d).is_symlink())
             for name in sorted(files):
                 path = Path(directory) / name
@@ -139,3 +149,48 @@ def library_files(roots):
 
 def media_key(path):
     return hashlib.sha256(str(Path(path).absolute()).encode()).hexdigest()[:24]
+
+
+def resolve_roots(automatic, custom=''):
+    """A configured but unavailable directory must not silently widen the scope."""
+    if not isinstance(custom,str):return [],['影视目录配置必须是每行一个绝对路径']
+    entries = custom.splitlines() if custom.strip() else automatic
+    roots, errors = [], []
+    for value in entries:
+        value = str(value or '').strip()
+        if not value:continue
+        path = Path(value)
+        if not path.is_absolute() or '..' in path.parts or str(path)=='/':
+            errors.append('目录必须是具体的绝对路径：'+value);continue
+        resolved = path.resolve()
+        if str(resolved)=='/':
+            errors.append('请配置具体的影视目录，不能扫描整个根目录');continue
+        if not resolved.is_dir() or not os.access(resolved,os.R_OK|os.X_OK):
+            errors.append('目录不存在或不可读取：'+value);continue
+        if any(resolved.is_relative_to(old) for old in roots):continue
+        roots = [old for old in roots if not old.is_relative_to(resolved)]+[resolved]
+    if not roots and not errors:errors.append('没有可用影视目录，请在插件设置中配置或检查 MoviePilot 媒体目录')
+    return list(map(str,roots)),errors
+
+
+def media_fingerprint(path, cache=None):
+    """Track local inputs without reading the video or subtitle bodies.
+
+    Directory and NFO stat caches are scoped to one inventory pass, so adding
+    external subtitles or changing a show's NFO invalidates the next pass.
+    """
+    path = Path(path);cache = cache if cache is not None else {}
+    def stamp(item):
+        key = ('stat',str(item))
+        if key not in cache:
+            try:
+                stat = item.stat();cache[key]=(stat.st_size,stat.st_mtime_ns,stat.st_ino)
+            except FileNotFoundError:cache[key]=None
+        return cache[key]
+    key = ('directory',str(path.parent))
+    if key not in cache:
+        cache[key]=[p for p in path.parent.iterdir() if p.suffix.lower() in SUB or p.name in {'Subs','subs','Subtitles','subtitles'}]
+    sidecars = [(p.name,stamp(p)) for p in cache[key] if p.name in {'Subs','subs','Subtitles','subtitles'} or p.stem==path.stem or p.stem.startswith(path.stem+'.')]
+    nfos = [path.with_suffix('.nfo'),path.parent/'movie.nfo'] + [parent/'tvshow.nfo' for parent in list(path.parents)[:3]]
+    inputs = [stamp(path),sorted(sidecars),[(str(nfo),stamp(nfo)) for nfo in nfos]]
+    return hashlib.sha256(json.dumps(inputs,ensure_ascii=False).encode()).hexdigest()

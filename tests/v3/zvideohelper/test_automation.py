@@ -86,8 +86,8 @@ class MatchingAndWriteTests(unittest.TestCase):
             self.assertTrue(worker.start(keyword='Wanted')['success']);worker._thread.join(5)
             snapshot=worker.snapshot('Wanted')
             self.assertFalse(snapshot['running'])
-            self.assertEqual((snapshot['task']['keyword'],snapshot['task']['matched'],snapshot['task']['planned'],snapshot['task']['checked']),('Wanted',2,1,1))
-            self.assertEqual(snapshot['total'],1)
+            self.assertEqual((snapshot['task']['keyword'],snapshot['task']['matched'],snapshot['task']['planned'],snapshot['task']['checked']),('Wanted',2,2,2))
+            self.assertEqual(snapshot['total'],2)
             self.assertEqual(worker.data['items'][key]['state'],'present')
 
     def test_nas_destinations_only_include_selected_identity_and_episode(self):
@@ -116,16 +116,17 @@ class MatchingAndWriteTests(unittest.TestCase):
             self.assertEqual(saved.read_bytes(),CHINESE);self.assertEqual(video.read_bytes(),b'original-video')
             self.assertFalse(list(Path(folder).glob('.zvideo-sub-*')))
 
-    def test_unknown_skips_search_and_cursor_resumes_next_batch(self):
+    def test_first_scan_covers_all_files_despite_legacy_batch_then_reuses_results(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder)/'library';root.mkdir()
             for name in ['a.strm','b.strm','c.strm']:(root/name).touch()
             svc=subtitles.SubtitleService(Path(folder)/'cli',run=lambda a:self.fail('unknown must never search'))
             worker=automation.SubtitleAutomation(Path(folder)/'state',svc,[root],{'subtitle_batch':2})
             worker._lock.acquire();worker.progress.update(running=True);worker._run(True)
-            self.assertEqual(len(worker.data['items']),2)
+            self.assertEqual(len(worker.data['items']),3)
             worker._lock.acquire();worker._run(True)
             self.assertEqual(len(worker.data['items']),3)
+            self.assertEqual((worker.progress['checked'],worker.progress['skipped']),(0,3))
             self.assertTrue(all(i['state']=='unknown' for i in worker.data['items'].values()))
 
     def test_expired_auth_pauses_and_notifies_once_then_can_resume(self):

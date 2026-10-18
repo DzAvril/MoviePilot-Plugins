@@ -2,7 +2,7 @@ function unwrap(response) {
   return response?.data?.success !== undefined ? response.data : response;
 }
 
-const STATES = {all:'全部记录',missing:'缺少中文',present:'已有中文',unknown:'待确认',excluded:'中文原声'};
+const STATES = {all:'全部记录',pending:'待检查',missing:'缺少中文',present:'已有中文',unknown:'待确认',excluded:'中文原声'};
 const PATHS = {
   film:'M4 3h16v18H4zM4 8h16M4 16h16M8 3v18M16 3v18',
   search:'m21 21-5-5M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z',
@@ -78,9 +78,9 @@ export function createPage(Vue) {
       });
       const changeLibraryState = value => act(async()=>{libraryQuery.value=scanKeyword.value.trim();listFilter.value=value;libraryPage.value=1;await loadLibrary();});
       const turnLibraryPage = value => act(async()=>{libraryPage.value=value;await loadLibrary();});
-      const scan = download => act(async()=>{
+      const scan = (download,force=false) => act(async()=>{
         libraryQuery.value=scanKeyword.value.trim();libraryPage.value=1;listFilter.value='all';
-        message.value=(await post('subtitle_scan',{download,keyword:libraryQuery.value})).message;await loadLibrary();
+        message.value=(await post('subtitle_scan',{download,keyword:libraryQuery.value,force})).message;await loadLibrary();
       });
       const resetManual = () => {
         choices.value=null;selectedMedia.value=null;result.value=null;files.value=null;series.value=null;seasonNo.value='';episodeNo.value='';
@@ -196,41 +196,45 @@ export function createPage(Vue) {
         h('span',description),h('div',[button('上一页',previous,current<=1 || working.value),h('span',`${current} / ${total}`),button('下一页',next,current>=total || working.value)])]);
       const libraryView = () => h('div',{class:'zvh-tab-content',role:'tabpanel','aria-label':'影视库补全'},[
         h('section',{class:'zvh-panel zvh-settings'},[
-          h('div',{class:'zvh-section-heading'},[h('div',[h('h3','检查本地影视的中文字幕'),h('p',{class:'zvh-muted'},'按片名检查一部作品，或分批检查整个影视库。')]),
+          h('div',{class:'zvh-section-heading'},[h('div',[h('h3','检查本地影视的中文字幕'),h('p',{class:'zvh-muted'},'首次完整检查，之后只检查新增或变化的文件。')]),
             h('span',{class:'zvh-badge'},library.value?.auto_enabled?'定时补全已开启':'定时补全未开启')]),
+          h('div',{class:'zvh-directories'},[h('div',[h('strong','扫描目录'),h('span',{class:'zvh-muted'},library.value?.root_source==='custom'?'来自插件自定义配置':'来自 MoviePilot 媒体目录'),button('配置目录',()=>emit('switch'))]),...(library.value?.roots || []).map(root=>h('code',root)),...(library.value?.root_errors || []).map(text=>h('p',{class:'zvh-error'},text))]),
+          h('div',{class:'zvh-coverage'},[h('strong',library.value?.coverage?.baseline_complete?'首次检查已完成':'首次检查尚未完成'),h('span',`已发现 ${library.value?.coverage?.discovered || 0} 个 · 已检查 ${library.value?.coverage?.checked || 0} 个 · 待检查 ${library.value?.coverage?.pending || 0} 个`)]),
           h('form',{class:'zvh-library-search',onSubmit:e=>{e.preventDefault();applyLibraryFilter();}},[
             h('label',{class:'zvh-field zvh-keyword'},[h('span','本地影视名称'),h('input',{'aria-label':'本地影视名称',value:scanKeyword.value,maxlength:200,placeholder:'搜索影视名称，留空查看全部',onInput:e=>{scanKeyword.value=e.target.value;}})]),
             h('button',{type:'submit',class:'zvh-button',disabled:working.value || libraryBusy.value},'筛选记录'),
             (scanKeyword.value || libraryQuery.value) && button('清除筛选',()=>applyLibraryFilter(true),working.value)]),
           h('div',{class:'zvh-scan-actions'},[
-            h('p',{class:'zvh-muted'},'片名范围同时用于检查、结果和统计。定时任务仍检查全部影视。'),
-            h('div',{class:'zvh-actions'},[button(scanKeyword.value.trim()?'检查此作品':'检查全部影视',()=>scan(false),working.value || busy.value || library.value?.running || !status.value?.enabled),
-              button(scanKeyword.value.trim()?'补全此作品':'补全全部影视',()=>scan(true),working.value || busy.value || library.value?.running || !status.value?.authorized || !status.value?.enabled,true)])])]),
-        h('div',{class:'zvh-scope-line'},[h('strong',`当前范围：${scope.value}`),h('span',`共 ${library.value?.scoped_total || 0} 个已检查文件`),
+            h('p',{class:'zvh-muted'},'检查未变化的文件会复用结果。强制重检会重新检查当前片名范围。'),
+            h('div',{class:'zvh-actions'},[button(scanKeyword.value.trim()?'增量检查此作品':library.value?.coverage?.baseline_complete?'增量检查':'首次全量检查',()=>scan(false),working.value || busy.value || library.value?.running || !status.value?.enabled || !!library.value?.root_errors?.length),
+              button('强制重检',()=>scan(false,true),working.value || busy.value || library.value?.running || !status.value?.enabled || !!library.value?.root_errors?.length),
+              button(scanKeyword.value.trim()?'补全此作品':'补全全部影视',()=>scan(true),working.value || busy.value || library.value?.running || !status.value?.authorized || !status.value?.enabled || !!library.value?.root_errors?.length,true)])])]),
+        h('div',{class:'zvh-scope-line'},[h('strong',`当前范围：${scope.value}`),h('span',`共 ${library.value?.scoped_total || 0} 个已索引文件`),
           button('刷新记录',()=>act(loadLibrary),working.value || libraryBusy.value)]),
         h('div',{class:'zvh-stats'},['missing','present','unknown','excluded'].map(state=>h('button',{
           type:'button',class:['zvh-stat',`zvh-${state}`,listFilter.value===state && 'zvh-active'],'aria-pressed':listFilter.value===state,
           'aria-label':`${STATES[state]} ${library.value?.counts?.[state] || 0}`,onClick:()=>changeLibraryState(state),disabled:working.value || libraryBusy.value,
         },[h('span',STATES[state]),h('strong',library.value?.counts?.[state] || 0),h('small',state==='missing'?'可尝试补全':state==='present'?'无需自动补全':state==='unknown'?'信息不足，需人工确认':'自动搜索已跳过')]))),
         library.value?.task?.started_at && h('section',{class:'zvh-task',role:'status'},[
-          h('div',[h('strong',library.value.running?`正在${library.value.task.mode}`:`最近一次${library.value.task.mode}`),h('span',{class:'zvh-muted'},`任务范围：${library.value.task.keyword || '全部本地影视'}`)]),
-          h('p',library.value.task.error || `${library.value.task.checked || 0} / ${library.value.task.planned || 0} 个已检查 · 下载 ${library.value.task.downloaded || 0} 份字幕`),
+          h('div',[h('strong',`${library.value.running?'正在执行':'最近任务'} · ${library.value.task.scan_type || library.value.task.mode}`),h('span',{class:'zvh-muted'},`任务范围：${library.value.task.keyword || '全部本地影视'}`)]),
+          h('p',library.value.task.error || `${library.value.task.phase || ''} · 检查 ${library.value.task.checked || 0}/${library.value.task.planned || 0} · 复用 ${library.value.task.skipped || 0} · 下载 ${library.value.task.downloaded || 0}`),
           library.value.running && h('progress',{max:Math.max(1,library.value.task.planned || 1),value:library.value.task.checked || 0,'aria-label':'本轮检查进度'}),
-          h('small',{class:'zvh-muted'},library.value.running ? library.value.task.current_title || '正在读取本地影视文件…' : `${date(library.value.task.finished_at)}${library.value.task.matched>library.value.task.planned?' · 分批检查，范围内还有文件等待后续轮询':''}`)]),
+          h('small',{class:'zvh-muted'},library.value.running ? library.value.task.current_title || '正在读取本地影视文件…' : `${date(library.value.task.finished_at)} · 视频轨道探测 ${library.value.task.probed || 0} 次`),
+          library.value.running && button('停止本次任务',()=>act(async()=>{message.value=(await post('subtitle_scan_cancel')).message;await loadLibrary();}),working.value)]),
         h('section',{class:'zvh-panel'},[
           h('div',{class:'zvh-results-heading'},[h('div',[h('h3','检查记录'),h('p',{class:'zvh-muted'},`${scope.value} · ${STATES[listFilter.value]} · ${library.value?.total || 0} 个文件`)]),
-            button('全部状态',()=>changeLibraryState('all'),listFilter.value==='all' || working.value || libraryBusy.value)]),
+            h('div',{class:'zvh-actions'},[button(`待检查 ${library.value?.counts?.pending || 0}`,()=>changeLibraryState('pending'),working.value || libraryBusy.value),button('全部状态',()=>changeLibraryState('all'),listFilter.value==='all' || working.value || libraryBusy.value)])]),
           libraryBusy.value ? h('div',{class:'zvh-empty',role:'status'},'正在读取当前范围…') : library.value?.items?.length ? h('div',{class:'zvh-library-list'},library.value.items.map(item=>h('article',{class:'zvh-library-item',key:item.id},[
             h('div',{class:'zvh-library-info'},[h('div',{class:'zvh-row-heading'},[h('h4',item.title),h('span',{class:['zvh-badge',`zvh-${item.state}`]},STATES[item.state])]),
               h('p',{class:'zvh-muted'},`${episodeLabel(item)} · ${date(item.checked_at)}`),h('p',{class:'zvh-reason'},item.reason),
               h('details',{class:'zvh-file-details'},[h('summary','查看文件位置'),h('code',item.path)])]),
-            button('为此文件找字幕',()=>searchFromLibrary(item),busy.value || working.value)]))) : empty(
+            button('为此文件找字幕',()=>searchFromLibrary(item),busy.value || working.value || item.state==='pending')]))) : empty(
               libraryQuery.value?'当前范围没有符合条件的记录':'还没有符合条件的检查记录',
-              library.value?.scoped_total ? '可切换“全部状态”查看此作品的其他记录。':'点击上方检查按钮建立记录；这里只展示实际检查过的文件。',
+              library.value?.scoped_total ? '可切换“全部状态”查看此作品的其他记录。':'点击上方检查按钮建立记录；发现的新文件会先标为待检查。',
               listFilter.value!=='all' && button('查看全部状态',()=>changeLibraryState('all'),working.value)),
           library.value?.total>0 && pagination(library.value.page,library.value.pages,()=>turnLibraryPage(library.value.page-1),()=>turnLibraryPage(library.value.page+1),`共 ${library.value.total} 个文件 · 每页 ${library.value.page_size} 个`)]),
         h('details',{class:'zvh-rules'},[h('summary','检查规则与目录'),h('p','按 TMDB 原始语言跳过中文原声作品。只检查 MoviePilot 本地影视入库目录；语言不明、STRM 和原盘需人工确认，不识别画面烧录字幕，不覆盖已有字幕。'),
-          h('p',`每轮最多检查 ${library.value?.batch_size || 25} 个媒体、尝试 5 个下载；按设置周期执行。`),
+          h('p',`检查会覆盖全部目录并缓存结果；后续只探测新增、变化或需重试的文件。每轮最多尝试 ${library.value?.download_limit || 5} 个自动下载。`),
           ...(library.value?.roots || []).map(root=>h('code',root))]),
       ]);
       const manualView = () => h('div',{class:'zvh-tab-content',role:'tabpanel','aria-label':'手动找字幕'},[
@@ -283,7 +287,7 @@ export function createPage(Vue) {
           h('div',{class:'zvh-download-actions'},[h('p',{class:'zvh-muted'},'字幕时间轴可能因发行版本不同而有偏差。'),button(working.value?'处理中…':saveMode.value==='nas'?'保存到 NAS 媒体目录':'下载到当前设备',download,working.value || busy.value || !selectedFile.value || (saveMode.value==='nas' && !destination.value),true)])]),
       ]);
       return () => h('div',{class:'zvh-root'},[
-        h('header',{class:'zvh-header'},[h('div',{class:'zvh-brand'},[h('div',{class:'zvh-brand-icon'},icon('film')),h('div',[h('p',{class:'zvh-kicker'},'极影视助手 · 1.10.0'),h('h2','中文字幕补全'),h('p',{class:'zvh-muted'},'自动补全与手动选择，都在这里。')])]),button('插件设置',()=>emit('switch'))]),
+        h('header',{class:'zvh-header'},[h('div',{class:'zvh-brand'},[h('div',{class:'zvh-brand-icon'},icon('film')),h('div',[h('p',{class:'zvh-kicker'},'极影视助手 · 1.11.0'),h('h2','中文字幕补全'),h('p',{class:'zvh-muted'},'自动补全与手动选择，都在这里。')])]),button('插件设置',()=>emit('switch'))]),
         h('div',{class:'zvh-status'},[h('div',[h('span',{class:['zvh-dot',status.value?.authorized && 'zvh-ready']}),h('span',status.value?.message || '读取授权状态…')]),
           h('div',[button('刷新状态',loadStatus,working.value || libraryBusy.value),button(status.value?.authorized?'重新授权':'网页授权',startAuth,working.value || busy.value || library.value?.running)])]),
         status.value && !status.value.installed && h('section',{class:'zvh-panel zvh-settings'},[
@@ -306,7 +310,7 @@ export function createConfig(Vue) {
   return defineComponent({
     name: 'ZvideoHelperConfig', props: {initialConfig: Object}, emits: ['save', 'close', 'switch', 'layout'],
     setup(props, {emit}) {
-      const config = reactive({enabled: false, subtitle_enabled: true, subtitle_auto: false, subtitle_cron: '*/30 * * * *', subtitle_batch: 25, subtitle_nas_cache: '', notify: false, onlyonce: false,
+      const config = reactive({enabled: false, subtitle_enabled: true, subtitle_auto: false, subtitle_cron: '*/30 * * * *', subtitle_library_paths: '', subtitle_download_limit: 5, subtitle_nas_cache: '', notify: false, onlyonce: false,
         sync_douban_status: false, use_douban_score: false, clean_cache: false, cron: '0 0 * * *',
         douban_score_update_days: 0, db_path: '', cookie: '', ...props.initialConfig});
       const error = ref('');
@@ -320,16 +324,19 @@ export function createConfig(Vue) {
       const save = () => {
         const days = Number(config.douban_score_update_days || 0);
         if (!Number.isInteger(days) || days < 0) {error.value = '评分更新周期需为不小于 0 的整数'; return;}
-        const batch = Number(config.subtitle_batch);
-        if (!Number.isInteger(batch) || batch < 1 || batch > 100) {error.value = '每轮检查媒体数需为 1–100 的整数'; return;}
+        const limit = Number(config.subtitle_download_limit);
+        if (!Number.isInteger(limit) || limit < 1 || limit > 20) {error.value = '每轮自动补全尝试数需为 1–20 的整数'; return;}
+        if (config.subtitle_library_paths.split('\n').some(path=>path.trim() && (!path.trim().startsWith('/') || path.trim()==='/' || path.trim().split('/').includes('..')))) {error.value='影视目录请填写具体的绝对路径，每行一个';return;}
         if (config.subtitle_auto && config.subtitle_cron.trim().split(/\s+/).length !== 5) {error.value = '执行周期需为 5 段 Cron 表达式'; return;}
-        emit('save', {...config, subtitle_batch: batch, douban_score_update_days: days});
+        emit('save', {...config, subtitle_download_limit: limit, douban_score_update_days: days});
       };
       return () => h('form', {class: 'zvh-root', onSubmit: event => {event.preventDefault(); save();}}, [
         h('header', {class: 'zvh-header'}, [h('div', [h('p', {class: 'zvh-kicker'}, '极影视助手'), h('h2', '插件设置')])]),
         h('section', {class: 'zvh-panel zvh-settings'}, [h('h3', '中文字幕补全'), toggle('subtitle_enabled', '开启字幕功能'), toggle('subtitle_auto', '定时检查并自动补全中文字幕'),
-          field('subtitle_cron', '字幕检查周期（默认每 30 分钟）'), field('subtitle_batch', '每轮检查媒体数（1–100）', 'number'),
-          h('p', {class: 'zvh-muted'}, '自动读取 MoviePilot 本地影视入库目录；每轮最多尝试 5 个媒体。未标注语言、STRM、原盘、匹配不确定的媒体跳过。同名字幕不覆盖。'),
+          h('label',{class:'zvh-field'},[h('span','影视库目录（每行一个，留空沿用 MoviePilot）'),h('textarea',{'aria-label':'影视库目录',rows:4,value:config.subtitle_library_paths,placeholder:'/media/电影\n/media/电视剧',onInput:e=>{config.subtitle_library_paths=e.target.value;}})]),
+          h('p',{class:'zvh-muted'},'填写 MoviePilot 容器内已有目录的绝对路径。填写后只扫描这些目录；留空读取 MoviePilot 的本地电影、电视剧入库目录。不会创建目录。'),
+          field('subtitle_cron', '增量检查与补全周期（默认每 30 分钟）'), field('subtitle_download_limit', '每轮最多尝试自动补全的文件数（1–20）', 'number'),
+          h('p', {class: 'zvh-muted'}, '首次完整建立索引，后续复用未变化文件的检查结果；后台串行、低优先级探测，支持停止与续扫。未标注语言、STRM、原盘、匹配不确定的媒体跳过。同名字幕不覆盖。'),
           field('subtitle_nas_cache', 'NAS 缓存路径（通常自动识别，识别失败时填写 staging 对应路径）'),
           h('p', {class: 'zvh-muted'}, '在插件首页完成网页授权，无需终端。日常自动续期；重新授权期间暂停下载。')]),
         h('section', {class: 'zvh-panel zvh-settings'}, [h('h3', '观影状态与评分'),

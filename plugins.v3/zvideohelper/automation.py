@@ -8,7 +8,7 @@ import tempfile
 import threading
 import time
 
-from .library import chinese_label, inspect_media, library_files, media_key, media_metadata
+from .library import chinese_label, inspect_media, library_files, media_key, media_metadata, media_fingerprint, resolve_roots
 from .subtitles import SubtitleError
 
 
@@ -59,8 +59,9 @@ def write_sidecar(media, subtitle):
 
 class SubtitleAutomation:
     def __init__(self, root, service, roots, config, notice=None, language_resolver=None):
-        self.root = Path(root);self.service = service;self.roots = list(roots);self.config = dict(config);self.notice = notice;self.language_resolver = language_resolver
-        self._lock = threading.Lock();self._stop = threading.Event();self._thread = None
+        self.root = Path(root);self.service = service;self.automatic_roots = list(roots);self.config = dict(config);self.notice = notice;self.language_resolver = language_resolver
+        self._lock = threading.Lock();self._data_lock = threading.RLock();self._stop = threading.Event();self._cancel = threading.Event();self._thread = None
+        self.roots,self.root_errors = resolve_roots(self.automatic_roots,self.config.get('subtitle_library_paths',''))
         self.state_path = self.root / 'subtitle-library.json'
         try:
             data = json.loads(self.state_path.read_text())
@@ -76,11 +77,12 @@ class SubtitleAutomation:
     def snapshot(self, keyword='', state='all', page=1, page_size=20):
         if not isinstance(keyword,str) or len(keyword)>200 or any(ord(c)<32 for c in keyword):
             return {'success':False,'message':'请输入不超过 200 个字符的影视名称'}
-        if state not in {'all','present','missing','unknown','excluded'}:
+        if state not in {'all','pending','present','missing','unknown','excluded'}:
             return {'success':False,'message':'检查状态无效'}
         keyword = keyword.strip()
-        items = [dict(i) for i in self.data['items'].values() if self.matches_keyword(i,keyword)]
-        counts = {state:sum(i.get('state') == state for i in items) for state in ('present','missing','unknown','excluded')}
+        with self._data_lock:all_items = [dict(i) for i in self.data['items'].values()]
+        items = [i for i in all_items if self.matches_keyword(i,keyword)]
+        counts = {state:sum(i.get('state') == state for i in items) for state in ('pending','present','missing','unknown','excluded')}
         scoped_total = len(items)
         if state!='all':items = [i for i in items if i.get('state')==state]
         items.sort(key=lambda i:(-i.get('checked_at',0),i['path']))
@@ -88,8 +90,13 @@ class SubtitleAutomation:
         page = max(1,min(pages,int(page)))
         task = dict(self.progress if self.progress['running'] else self.data.get('last_task',self.progress))
         return {'success':True, **self.progress, 'auto_enabled':bool(self.config.get('subtitle_auto')), 'cron':self.config.get('subtitle_cron','*/30 * * * *'),
-            'roots':self.roots, 'counts':counts, 'total_indexed':len(self.data['items']), 'scoped_total':scoped_total,
-            'batch_size':max(1,min(100,int(self.config.get('subtitle_batch',25)))),
+            'roots':self.roots, 'root_source':'custom' if isinstance(self.config.get('subtitle_library_paths'),str) and self.config['subtitle_library_paths'].strip() else 'moviepilot',
+            'root_errors':self.root_errors,'counts':counts, 'total_indexed':len(all_items), 'scoped_total':scoped_total,
+            'coverage':{'discovered':len(all_items),'checked':sum(i.get('state')!='pending' for i in all_items),
+                'pending':sum(i.get('state')=='pending' for i in all_items),'last_inventory':self.data.get('last_inventory'),
+                'baseline_complete':bool(not self.root_errors and self.data.get('baseline_complete') and self.data.get('catalog_roots')==self.roots
+                    and all(i.get('fingerprint') and i.get('state')!='pending' for i in all_items))},
+            'download_limit':max(1,min(20,int(self.config.get('subtitle_download_limit',5)))),
             'total':len(items),'page':page,'pages':pages,'page_size':page_size,'keyword':keyword,'state':state,'task':task,
             'last_run':self.data.get('last_run'), 'last_message':self.data.get('last_message',''),
             'items':items[(page-1)*page_size:page*page_size]}
@@ -105,23 +112,35 @@ class SubtitleAutomation:
         return {'success':True,'items':sorted(items,key=lambda i:i['path'])}
 
     def _save(self):
-        self.root.mkdir(parents=True, exist_ok=True)
-        fd, name = tempfile.mkstemp(prefix='.subtitle-state-', dir=self.root)
-        try:
-            with os.fdopen(fd,'w') as h:json.dump(self.data, h, ensure_ascii=False)
-            os.replace(name, self.state_path)
-        finally:
-            if os.path.exists(name):os.unlink(name)
+        with self._data_lock:
+            self.root.mkdir(parents=True, exist_ok=True)
+            fd, name = tempfile.mkstemp(prefix='.subtitle-state-', dir=self.root)
+            try:
+                with os.fdopen(fd,'w') as h:json.dump(self.data, h, ensure_ascii=False)
+                os.replace(name, self.state_path)
+            finally:
+                if os.path.exists(name):os.unlink(name)
 
-    def start(self, download=False, keyword=""):
+    def start(self, download=False, keyword="", force=False):
         if not isinstance(keyword,str) or len(keyword)>200 or any(ord(c)<32 for c in keyword):return {'success':False,'message':'媒体筛选名称无效'}
+        if self._stop.is_set():return {'success':False,'message':'插件正在停止，请稍后重试'}
+        self.roots,self.root_errors = resolve_roots(self.automatic_roots,self.config.get('subtitle_library_paths',''))
+        if self.root_errors:return {'success':False,'message':'；'.join(self.root_errors)}
         if not self._lock.acquire(blocking=False):return {'success':False, 'message':'已有媒体检查正在运行'}
+        self._cancel.clear()
         self.progress = {'running':True, 'checked':0, 'downloaded':0, 'mode':'补全' if download else '检查',
             'keyword':keyword.strip(),'matched':0,'planned':0,'started_at':time.time(),'current_title':'','error':''}
-        self._thread = threading.Thread(target=self._run, args=(download, keyword.strip()), daemon=True);self._thread.start()
-        return {'success':True, 'message':'已开始后台补全' if download else '已开始后台检查'}
+        self._thread = threading.Thread(target=self._run, args=(download, keyword.strip(), force), daemon=True);self._thread.start()
+        return {'success':True, 'message':'已开始后台检查与补全' if download else '已开始后台'+('强制重检' if force else '增量检查（首次会完整建索引）')}
 
     def stop(self):self._stop.set()
+
+    def cancel(self):
+        if not self.progress['running']:return {'success':True,'message':'当前没有检查任务'}
+        self._cancel.set()
+        return {'success':True,'message':'将在当前文件处理结束后停止本次任务；已完成结果会保存，下次增量检查可续扫'}
+
+    def interrupted(self):return self._stop.is_set() or self._cancel.is_set()
 
     def target(self, identifier):
         item = self.data['items'].get(identifier)
@@ -140,8 +159,9 @@ class SubtitleAutomation:
             if inspect_media(media)['state'] == 'present':raise SubtitleError('媒体已有中文字幕，已保留现有字幕')
             if self._stop.is_set():raise SubtitleError('插件正在停止，请稍后重试')
             saved = write_sidecar(media, result['path'])
-            self.data['items'][media_id].update(state='present', reason='手动下载中文外挂字幕', saved=saved.name, checked_at=time.time())
-            self._save()
+            with self._data_lock:
+                self.data['items'][media_id].update(state='present', reason='手动下载中文外挂字幕', saved=saved.name, checked_at=time.time(),fingerprint=media_fingerprint(media))
+                self._save()
             return {'success':True, 'message':'已保存到媒体旁边：'+saved.name}
         except (SubtitleError, OSError) as error:
             return {'success':False, 'message':str(error) if isinstance(error,SubtitleError) else '字幕保存失败，请检查目录写入权限'}
@@ -186,65 +206,130 @@ class SubtitleAutomation:
         if cached and time.time() - cached['time'] < (86400 * 30 if cached['language'] else 3600):return cached['language']
         try:language = str(self.language_resolver(metadata) or '').lower().strip()
         except Exception:language = ''
-        self.data['languages'][key] = {'language':language, 'time':time.time()}
+        with self._data_lock:self.data['languages'][key] = {'language':language, 'time':time.time()}
         return language
 
-    def _run(self, download, keyword=""):
-        lock = None
+    @staticmethod
+    def needs_check(old, fingerprint, force=False):
+        if force or old.get('state')=='pending' or old.get('fingerprint')!=fingerprint:return True
+        retryable = old.get('state')=='unknown' and any(word in old.get('reason','') for word in ('TMDB','探测失败','探测超时','无法读取'))
+        return retryable and time.time()-old.get('checked_at',0)>=86400
+
+    def _checkpoint(self, force=False):
+        if force or self.progress['checked']-self._checkpoint_checked>=100 or time.monotonic()-self._checkpoint_time>=10:
+            with self._data_lock:
+                self.data['last_task']=dict(self.progress);self._save()
+            self._checkpoint_checked=self.progress['checked'];self._checkpoint_time=time.monotonic()
+
+    def _probe_observer(self, elapsed):
+        self.progress['probed']+=1
+        self.progress['probe_seconds']=round(self.progress['probe_seconds']+elapsed,3)
+
+    def _inspect_one(self, media, fingerprint, old):
+        metadata=media_metadata(media);self.progress['current_title']=metadata['title']
+        language=self.original_language(metadata)
+        if language in {'zh','zho','chi','cmn','yue','cn'} or language.startswith('zh-'):
+            inspection={'state':'excluded','reason':'TMDB 原始语言为中文，已跳过自动字幕搜索'}
+        elif not language and self.language_resolver:
+            inspection={'state':'unknown','reason':'未能获得 TMDB 原始语言，等待人工确认；不会自动搜索'}
+        else:inspection=inspect_media(media,probe_observer=self._probe_observer)
+        item={'id':media_key(media),'path':str(media),**metadata,**inspection,'original_language':language,
+            'fingerprint':fingerprint,'checked_at':time.time()}
+        for name in ('attempt_at','saved','subtitle'):
+            if old.get(name):item[name]=old[name]
+        with self._data_lock:self.data['items'][item['id']]=item
+        self.progress['checked']+=1
+
+    def _run(self, download, keyword="", force=False):
+        lock=None;completed=False
+        self.progress={'running':True,'checked':0,'downloaded':0,'mode':'检查与补全' if download else '检查',
+            'keyword':keyword,'matched':0,'planned':0,'discovered':0,'skipped':0,'probed':0,'probe_seconds':0,
+            'started_at':time.time(),'current_title':'','error':'','phase':'发现文件',
+            'scan_type':'强制重检' if force else '增量检查'}
+        self._checkpoint_checked=0;self._checkpoint_time=time.monotonic()
         try:
-            self.root.mkdir(parents=True, exist_ok=True)
-            lock = (self.root / 'subtitle-automation.lock').open('a')
-            try:fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.root.mkdir(parents=True,exist_ok=True)
+            lock=(self.root/'subtitle-automation.lock').open('a')
+            try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
             except BlockingIOError:raise SubtitleError('上次字幕任务仍在结束，请稍后重试')
-            files = sorted(library_files(self.roots), key=str)
-            current = {media_key(p) for p in files}
-            self.data['items'] = {k:v for k,v in self.data['items'].items() if k in current}
-            if keyword:files = [p for p in files if self.matches_keyword({**self.data['items'].get(media_key(p),{}),'path':str(p)},keyword)]
-            cursor = self.data.get('cursor','')
-            # New arrivals first, then the least recently checked files. New
-            # media do not wait for a full rotation of an existing large library.
-            files.sort(key=lambda p:(media_key(p) in self.data['items'], self.data['items'].get(media_key(p),{}).get('checked_at',-p.stat().st_mtime)))
-            limit = max(1,min(100,int(self.config.get('subtitle_batch',25))))
-            self.progress.update(keyword=keyword,matched=len(files),planned=min(len(files),limit))
-            auth_notified = bool(self.data.get('auth_notified'));attempts = 0
-            for media in files[:limit]:
-                if self._stop.is_set():break
-                key = media_key(media);old = self.data['items'].get(key,{})
-                metadata = media_metadata(media);language = self.original_language(metadata)
-                self.progress['current_title'] = metadata['title']
-                if language in {'zh','zho','chi','cmn','yue','cn'} or language.startswith('zh-'):
-                    inspection = {'state':'excluded', 'reason':'TMDB 原始语言为中文，已跳过自动字幕搜索'}
-                elif not language and self.language_resolver:
-                    inspection = {'state':'unknown', 'reason':'未能获得 TMDB 原始语言，等待人工确认；不会自动搜索'}
-                else:inspection = inspect_media(media)
-                item = {'id':key, 'path':str(media), **metadata, **inspection, 'original_language':language, 'checked_at':time.time()}
-                if old.get('attempt_at'):item['attempt_at'] = old['attempt_at']
-                self.data['items'][key] = item;self.data['cursor'] = str(media);self.progress['checked'] += 1
-                if download and item['state'] == 'missing' and attempts < 5 and time.time() - old.get('attempt_at',0) >= 86400:
-                    item['attempt_at'] = time.time();attempts += 1
+            if self.root_errors:raise SubtitleError('；'.join(self.root_errors))
+            files=[]
+            for media in library_files(self.roots,strict=True):
+                if self.interrupted():return
+                files.append(media);self.progress['discovered']+=1
+            # Only a completely enumerated set can remove obsolete index entries.
+            current={media_key(p) for p in files}
+            with self._data_lock:
+                items={k:dict(v) for k,v in self.data['items'].items() if k in current}
+                for media in files:
+                    key=media_key(media)
+                    if key not in items:items[key]={'id':key,'path':str(media),**media_metadata(media,read_nfo=False),
+                        'state':'pending','reason':'已发现文件，等待首次检查','checked_at':0}
+                self.data['items']=items;self.data['catalog_roots']=list(self.roots);self.data['last_inventory']=time.time()
+            if not force and any(not i.get('fingerprint') for i in items.values()):self.progress['scan_type']='首次全量检查'
+            scoped=[p for p in files if self.matches_keyword(items[media_key(p)],keyword)]
+            self.progress.update(matched=len(scoped),phase='比较文件变化')
+            cache={};queue=[]
+            for media in scoped:
+                if self.interrupted():return
+                key=media_key(media);old=dict(items[key])
+                try:fingerprint=media_fingerprint(media,cache)
+                except OSError:
+                    with self._data_lock:items[key].update(state='unknown',reason='本地文件暂时无法读取，等待后续检查')
+                    continue
+                if self.needs_check(old,fingerprint,force):
+                    queue.append((media,fingerprint,old))
+                    with self._data_lock:items[key].update(state='pending',reason='等待检查文件变化' if old.get('fingerprint') else '等待首次检查')
+                else:self.progress['skipped']+=1
+            self.data['baseline_complete']=all(i.get('fingerprint') and i['state']!='pending' for i in items.values())
+            self.progress.update(planned=len(queue),phase='检查字幕')
+            self._checkpoint(force=True)
+            for media,fingerprint,old in queue:
+                if self.interrupted():return
+                before_probes=self.progress['probed']
+                try:self._inspect_one(media,fingerprint,old)
+                except OSError:
+                    with self._data_lock:items[media_key(media)].update(state='unknown',reason='本地文件暂时无法读取，等待后续检查')
+                    self.progress['checked']+=1
+                self._checkpoint()
+                # One low-priority probe at a time; yield between actual probes.
+                if self.progress['probed']>before_probes:self._cancel.wait(.1)
+            self.data['baseline_complete']=all(i.get('fingerprint') and i['state']!='pending' for i in items.values())
+            if self.data['baseline_complete']:self.data['last_full_scan']=time.time()
+            self._checkpoint(force=True)
+            if download and not self.interrupted():
+                self.progress['phase']='补全字幕'
+                limit=max(1,min(20,int(self.config.get('subtitle_download_limit',5))))
+                eligible=[dict(items[media_key(p)]) for p in scoped if items[media_key(p)]['state']=='missing'
+                    and time.time()-items[media_key(p)].get('attempt_at',0)>=86400]
+                eligible.sort(key=lambda i:(i.get('attempt_at',0),-i.get('checked_at',0)))
+                for item in eligible[:limit]:
+                    if self.interrupted():return
+                    self.progress['current_title']=item['title'];item['attempt_at']=time.time()
+                    with self._data_lock:items[item['id']]=dict(item)
                     try:
-                        if self._auto_download(item):self.progress['downloaded'] += 1
-                        self.data['auth_notified'] = False
+                        if self._auto_download(item):
+                            self.progress['downloaded']+=1;item['fingerprint']=media_fingerprint(Path(item['path']))
+                        self.data['auth_notified']=False
                     except SubtitleError as error:
-                        item['reason'] = str(error)
+                        item['reason']=str(error)
                         if self.service.auth_failed:
-                            self.data['cursor'] = cursor
                             item.pop('attempt_at',None)
-                            if not auth_notified and self.notice:self.notice('极影视字幕授权失效，自动下载已暂停。请打开插件页面重新授权，无需终端。')
-                            self.data['auth_notified'] = True;break
-                    except OSError:item['reason'] = '文件无法读取或字幕保存失败，请检查权限'
-                self._save()
-            self.data['last_run'] = time.time()
-            self.data['last_message'] = '本轮检查 %s 个媒体，下载 %s 份字幕%s' % (self.progress['checked'],self.progress['downloaded'], '；媒体筛选：'+keyword if keyword else '；分批轮询全部本地影视库')
-            self._save()
+                            if not self.data.get('auth_notified') and self.notice:self.notice('极影视字幕授权失效，自动下载已暂停。请打开插件页面重新授权，无需终端。')
+                            self.data['auth_notified']=True;break
+                    except OSError:item['reason']='文件无法读取或字幕保存失败，请检查权限'
+                    finally:
+                        with self._data_lock:items[item['id']]=dict(item)
+                    self._checkpoint()
+            completed=not self.interrupted()
+            self.data['last_run']=time.time()
+            self.data['last_message']='发现 %s 个文件，本次检查 %s 个，复用 %s 个结果，下载 %s 份字幕' % (len(files),self.progress['checked'],self.progress['skipped'],self.progress['downloaded'])
         except Exception as error:
-            self.data['last_message'] = str(error) if isinstance(error,SubtitleError) else '本轮检查失败，请检查本地影视库与探测工具'
-            self.progress['error'] = self.data['last_message']
+            self.data['last_message']=str(error) if isinstance(error,SubtitleError) else '本轮检查失败，请检查影视目录可读性与探测工具；已有记录已保留'
+            self.progress['error']=self.data['last_message']
         finally:
-            self.progress['running'] = False
-            self.progress['finished_at'] = time.time()
-            self.data['last_task'] = dict(self.progress)
-            try:self._save()
+            self.progress.update(running=False,finished_at=time.time(),phase='已完成' if completed else '已停止' if self.interrupted() else '失败')
+            try:self._checkpoint(force=True)
             except OSError:pass
             if lock:lock.close()
             self._lock.release()
