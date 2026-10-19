@@ -1,0 +1,39 @@
+name: RemoveLink
+
+on:
+  push:
+    branches: [main]
+    paths: ['plugins/removelink/**', 'tests/removelink_*.py', '.github/workflows/removelink.yml']
+  pull_request:
+    paths: ['plugins/removelink/**', 'tests/removelink_*.py', '.github/workflows/removelink.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m compileall -q plugins/removelink
+      - name: Native form compatibility and cleanup regressions
+        run: |
+          for test in tests/removelink_*regression.py; do
+            python "$test"
+          done
+      - name: Check package version
+        run: |
+          python - <<'PY'
+          import ast, json
+          tree = ast.parse(open('plugins/removelink/__init__.py').read())
+          plugin = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'RemoveLink')
+          version = next(n.value.value for n in plugin.body if isinstance(n, ast.Assign)
+                         and any(isinstance(t, ast.Name) and t.id == 'plugin_version' for t in n.targets))
+          meta = json.load(open('package.json'))['RemoveLink']
+          assert meta['version'] == version
+          assert next(iter(meta['history'])) == 'v' + version
+          PY
+      - run: git diff --check
