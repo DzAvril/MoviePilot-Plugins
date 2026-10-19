@@ -59,9 +59,10 @@ export function createPage(Vue) {
       const chosen = computed(() => (data.value?.report?.rows || []).filter(row => selected.value.includes(row.id)));
       const planBlock = computed(() => {
         if (data.value?.busy) return '正在检测，复选框暂不可选；检测完成后会自动更新。';
-        if (data.value?.plan_current === false) return '配置已变更，复选框暂不可选；请点击「只读检测」重新复核。';
+        if (data.value?.config_error) return '配置有误，复选框暂不可选；请修正设置后重新只读检测。';
         if ((data.value?.last_error?.at || 0) > (data.value?.report?.at || 0)) return '最近一次检测失败，复选框暂不可选；请排查错误后重新只读检测。';
         if (!data.value?.report?.at) return '尚无检测结果，请点击「只读检测」开始复核。';
+        if (data.value?.plan_current === false) return '配置已变更，复选框暂不可选；请点击「只读检测」重新复核。';
         if (now.value - data.value.report.at > 600) return '检测结果已超过 10 分钟，复选框暂不可选；请点击「只读检测」重新复核。「刷新结果」只读取已有结果。';
         return '';
       });

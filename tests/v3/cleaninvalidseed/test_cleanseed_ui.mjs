@@ -132,6 +132,23 @@ test('expired evidence and a busy operation disable every selection', async () =
   }
 });
 
+test('first use distinguishes missing reports, configuration errors and failed initial scans', async () => {
+  for (const [changes, message] of [
+    [{}, /尚无检测结果/],
+    [{config_error: '下载器尚未配置'}, /配置有误/],
+    [{last_error: {at: Date.now() / 1000, message: 'offline'}}, /最近一次检测失败/],
+  ]) {
+    const fixture = await pageFixture({report: {rows: []}, plan_current: false, ...changes});
+    try {
+      const text = all(fixture.render(), n => n.props.id === 'cis-plan-block')[0].children;
+      assert.match(text, message);
+      assert.doesNotMatch(text, /配置已变更/);
+      assert.equal(button(fixture.render(), '选择本页可处理项').props.disabled, true);
+      assert.equal(fixture.calls.length, 0);
+    } finally {fixture.close();}
+  }
+});
+
 test('waiting candidates explain the observation window and disable empty bulk selection', async () => {
   const fixture = await pageFixture({config: {action: 'preview', confirmations: 2}, report: {scan_id: 'waiting', at: Date.now() / 1000,
     rows: [{id: 'wait', name: '观察中', kind: 'torrent', status: 'candidate', ready: false, observations: 2, ready_at: Date.now() / 1000 + 3600}]}});
