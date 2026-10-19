@@ -313,7 +313,7 @@ class RemoveLink(_PluginBase):
     # 插件图标
     plugin_icon = "Ombi_A.png"
     # 插件版本
-    plugin_version = "2.17"
+    plugin_version = "2.18"
     # 插件作者
     plugin_author = "DzAvril"
     # 作者主页
@@ -560,6 +560,9 @@ class RemoveLink(_PluginBase):
 
     def get_api(self) -> List[Dict[str, Any]]:
         pass
+
+    def get_render_mode(self):
+        return "vue", "dist/assets"
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         return [

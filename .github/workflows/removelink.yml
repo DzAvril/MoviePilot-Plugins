@@ -1,0 +1,101 @@
+name: RemoveLink
+
+on:
+  push:
+    branches: [main]
+    paths: ['plugins/removelink/**', 'tests/removelink_*', '.github/workflows/removelink.yml']
+  pull_request:
+    paths: ['plugins/removelink/**', 'tests/removelink_*', '.github/workflows/removelink.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.package.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: python -m compileall -q plugins/removelink
+      - name: Native form compatibility and cleanup regressions
+        run: |
+          for test in tests/removelink_*regression.py; do
+            python "$test"
+          done
+      - name: Check package version
+        run: |
+          python - <<'PY'
+          import ast, json
+          tree = ast.parse(open('plugins/removelink/__init__.py').read())
+          plugin = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'RemoveLink')
+          version = next(n.value.value for n in plugin.body if isinstance(n, ast.Assign)
+                         and any(isinstance(t, ast.Name) and t.id == 'plugin_version' for t in n.targets))
+          meta = json.load(open('package.json'))['RemoveLink']
+          assert meta['version'] == version
+          assert next(iter(meta['history'])) == 'v' + version
+          PY
+      - name: Build and test the shared Vue settings
+        run: |
+          npm --prefix plugins/removelink run check
+          npm --prefix plugins/removelink run build
+          git diff --exit-code -- plugins/removelink/dist
+          npm install --prefix "$RUNNER_TEMP/removelink-vue" --no-package-lock --no-audit --no-fund vue@3.5.22
+          cp "$RUNNER_TEMP/removelink-vue/node_modules/vue/dist/vue.esm-browser.prod.js" "$RUNNER_TEMP/removelink-vue/vue.mjs"
+          REMOVELINK_VUE_RUNTIME="$RUNNER_TEMP/removelink-vue/vue.mjs" node --test tests/removelink_ui.test.mjs
+      - name: Check scoped styles
+        run: |
+          mkdir -p "$RUNNER_TEMP/removelink-gate/plugins"
+          cp package.json "$RUNNER_TEMP/removelink-gate/"
+          cp -R plugins/removelink "$RUNNER_TEMP/removelink-gate/plugins/"
+          python .github/scripts/check_federation_css.py --root "$RUNNER_TEMP/removelink-gate"
+      - run: git diff --check
+      - name: Build standard plugin asset
+        id: package
+        run: |
+          python - <<'PY'
+          import json, os, zipfile
+          from pathlib import Path
+          version = json.loads(Path('package.json').read_text())['RemoveLink']['version']
+          with zipfile.ZipFile(f'removelink_v{version}.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
+              for path in sorted(Path('plugins/removelink').rglob('*')):
+                  if path.is_file() and '__pycache__' not in path.parts and not path.name.startswith('._'):
+                      archive.write(path, path.relative_to('plugins'))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'version={version}\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: removelink-plugin
+          path: removelink_v*.zip
+
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: removelink-plugin
+      - name: Publish plugin version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PLUGIN_VERSION: ${{ needs.check.outputs.version }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          tag="RemoveLink_v${PLUGIN_VERSION}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            exit 0
+          fi
+          gh release create "$tag" "removelink_v${PLUGIN_VERSION}.zip" \
+            --target "$COMMIT_SHA" --title "清理媒体文件 ${PLUGIN_VERSION}" \
+            --notes '采用做种复核同款青绿色界面，分区管理硬链接、STRM 与关联清理；原有配置与清理逻辑保留。'
