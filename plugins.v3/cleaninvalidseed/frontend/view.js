@@ -51,15 +51,32 @@ export function createPage(Vue) {
     setup(props, {emit}) {
       const data = ref(null), error = ref(''), notice = ref(''), loading = ref(false), acting = ref(false);
       const query = ref(''), status = ref('candidate'), kind = ref(''), page = ref(1), tab = ref('review');
-      const selected = ref([]), dialog = ref(''), confirmation = ref('');
+      const selected = ref([]), dialog = ref(''), confirmation = ref(''), now = ref(Date.now() / 1000);
       let timer, disposed = false, fetching = false;
       const endpoint = name => `plugin/${props.pluginId}/page_${name}`;
       const rows = computed(() => filterRows(data.value?.report?.rows || [], query.value, status.value, kind.value));
       const paged = computed(() => paginate(rows.value, page.value));
       const chosen = computed(() => (data.value?.report?.rows || []).filter(row => selected.value.includes(row.id)));
-      const expired = computed(() => data.value?.plan_current === false || !data.value?.report?.at || Date.now() / 1000 - data.value.report.at > 600 || (data.value.last_error?.at || 0) > data.value.report.at);
+      const planBlock = computed(() => {
+        if (data.value?.busy) return '正在检测，复选框暂不可选；检测完成后会自动更新。';
+        if (data.value?.config_error) return '配置有误，复选框暂不可选；请修正设置后重新只读检测。';
+        if ((data.value?.last_error?.at || 0) > (data.value?.report?.at || 0)) return '最近一次检测失败，复选框暂不可选；请排查错误后重新只读检测。';
+        if (!data.value?.report?.at) return '尚无检测结果，请点击「只读检测」开始复核。';
+        if (data.value?.plan_current === false) return '配置已变更，复选框暂不可选；请点击「只读检测」重新复核。';
+        if (now.value - data.value.report.at > 600) return '检测结果已超过 10 分钟，复选框暂不可选；请点击「只读检测」重新复核。「刷新结果」只读取已有结果。';
+        return '';
+      });
+      const rowBlock = row => {
+        if (row.ready) return '';
+        if (row.status !== 'candidate') return `「${STATUS[row.status] || '信息不足'}」项目保留，不能选择处理。`;
+        const count = `已观察 ${row.observations || 0}/${data.value.config.confirmations || 2} 次`;
+        if (row.ready_at > now.value) return `${count}；观察期未结束，最早 ${date(row.ready_at)} 后重新检测。`;
+        return `${count}；请重新检测确认，满足观察次数和时长后才可选择；有效观察至少间隔 1 小时。`;
+      };
+      const actionBlocked = computed(() => !!planBlock.value || acting.value || !chosen.value.length || chosen.value.some(row => !row.ready));
       watch([query, status, kind], () => {page.value = 1; selected.value = [];});
       const load = async (quiet = false) => {
+        now.value = Date.now() / 1000;
         if (fetching || disposed) return;
         fetching = true; if (!quiet) loading.value = true;
         try {
@@ -84,6 +101,8 @@ export function createPage(Vue) {
         finally {acting.value = false;}
       };
       const execute = async () => {
+        now.value = Date.now() / 1000;
+        if (actionBlocked.value) {notice.value = planBlock.value || '所选项目暂不可处理，请重新复核。'; dialog.value = ''; return;}
         acting.value = true;
         try {
           const result = unwrap(await props.api.post(endpoint('execute'), {scan_id: data.value.report.scan_id, ids: selected.value, action: dialog.value, confirmation: confirmation.value}));
@@ -101,33 +120,35 @@ export function createPage(Vue) {
       };
       const toggle = id => {selected.value = selected.value.includes(id) ? selected.value.filter(x => x !== id) : [...selected.value, id];};
       const open = action => {dialog.value = action; confirmation.value = '';};
-      onMounted(() => {emit('layout', {maxWidth: '1180px'}); load(); timer = setInterval(() => {if (!document.hidden && !acting.value) load(true);}, 3000);});
+      onMounted(() => {emit('layout', {maxWidth: '1180px'}); load(); timer = setInterval(() => {now.value = Date.now() / 1000; if (!document.hidden && !acting.value) load(true);}, 3000);});
       onBeforeUnmount(() => {disposed = true; clearInterval(timer);});
       const rowView = row => h('article', {key: row.id, class: `cis-row ${selected.value.includes(row.id) ? 'cis-selected' : ''}`}, [
-        h('input', {type: 'checkbox', 'aria-label': `选择 ${row.name}`, checked: selected.value.includes(row.id), disabled: !row.ready || expired.value || data.value.busy || acting.value, onChange: () => toggle(row.id)}),
+        h('input', {type: 'checkbox', 'aria-label': `选择 ${row.name}`, 'aria-describedby': [planBlock.value && 'cis-plan-block', !row.ready && `cis-row-block-${row.id}`].filter(Boolean).join(' ') || undefined,
+          title: [planBlock.value, rowBlock(row)].filter(Boolean).join(' '), checked: selected.value.includes(row.id), disabled: !row.ready || !!planBlock.value || acting.value, onChange: () => toggle(row.id)}),
         h('div', {class: 'cis-row-icon'}, icon(row.kind === 'file' ? 'folder' : 'shield', 20)),
         h('div', {class: 'cis-row-body'}, [h('div', {class: 'cis-row-title'}, [h('strong', row.name), badge(STATUS[row.status], row.status), row.ready && badge('可处理', 'ready')]),
-          h('p', {class: 'cis-reason'}, row.reason), h('div', {class: 'cis-meta'}, [row.service || '源文件', ' · ', formatBytes(row.size),
+          h('p', {class: 'cis-reason'}, row.reason), !row.ready && h('p', {class: 'cis-row-block', id: `cis-row-block-${row.id}`}, `暂不可选 · ${rowBlock(row)}`), h('div', {class: 'cis-meta'}, [row.service || '源文件', ' · ', formatBytes(row.size),
             row.kind === 'torrent' && ` · ${row.client === 'transmission' ? 'Transmission' : 'qBittorrent'}${row.category ? ` · ${row.category}` : ''}`,
-            row.observations && ` · 已观察 ${row.observations} 次`, !row.ready && row.ready_at && ` · 最早 ${date(row.ready_at)}`]),
+            row.observations && ` · 已观察 ${row.observations} 次`]),
           row.path && h('code', {class: 'cis-path'}, row.path),
           row.trackers?.length > 0 && h('details', [h('summary', 'Tracker 证据'), ...row.trackers.map(t => h('p', {class: 'cis-evidence'}, [h('strong', t.host), ` · ${t.healthy ? '成功' : t.detail || '暂无成功记录'}`]))])])]);
       const review = () => [
         h('div', {class: 'cis-toolbar'}, [h('label', {class: 'cis-search'}, [icon('search', 17), h('input', {'aria-label': '搜索任务、目录或原因', placeholder: '搜索任务、目录或原因', value: query.value, onInput: e => {query.value = e.target.value;}})]),
           select('检测状态', status.value, [['candidate', '待复核'], ['ready', '可处理'], ['warning', '需检查'], ['protected', '已保护'], ['unknown', '信息不足'], ['healthy', '正常'], ['', '全部状态']], v => {status.value = v;}),
           select('项目类型', kind.value, [['', '全部项目'], ['torrent', '种子任务'], ['file', '源文件']], v => {kind.value = v;})]),
-        h('div', {class: 'cis-results-heading'}, [h('span', `共 ${rows.value.length} 项`), button('选择本页可处理项', () => {selected.value = [...new Set([...selected.value, ...paged.value.rows.filter(r => r.ready).map(r => r.id)])];}, {disabled: expired.value || data.value.busy || acting.value})]),
+        planBlock.value && h('div', {id: 'cis-plan-block', class: 'cis-alert cis-alert-warning', role: 'status'}, planBlock.value),
+        h('div', {class: 'cis-results-heading'}, [h('span', `共 ${rows.value.length} 项 · 本页可处理 ${planBlock.value ? 0 : paged.value.rows.filter(r => r.ready).length} 项`), button('选择本页可处理项', () => {selected.value = [...new Set([...selected.value, ...paged.value.rows.filter(r => r.ready).map(r => r.id)])];}, {disabled: !!planBlock.value || acting.value || !paged.value.rows.some(r => r.ready)})]),
         h('div', {class: 'cis-list'}, paged.value.rows.length ? paged.value.rows.map(rowView) : [h('div', {class: 'cis-empty'}, [icon('check', 36), h('strong', data.value.report.at ? '当前筛选下没有项目' : '从一次只读检测开始'), h('p', data.value.report.at ? '可以切换状态，查看正常任务与受保护项目。' : '读取下载器和目录，只展示证据，不修改任务和文件。')])]),
         h('div', {class: 'cis-pagination'}, [h('span', `第 ${paged.value.page} / ${paged.value.pages} 页`), button('上一页', () => {page.value = paged.value.page - 1;}, {disabled: paged.value.page <= 1}), button('下一页', () => {page.value = paged.value.page + 1;}, {disabled: paged.value.page >= paged.value.pages})]),
         selected.value.length > 0 && h('div', {class: 'cis-selection'}, [h('strong', `已选 ${selected.value.length} 项`),
           button('取消选择', () => {selected.value = [];}),
-          chosen.value.every(row => row.kind === 'torrent') && button('标记任务', () => open('tag'), {disabled: expired.value || acting.value || data.value.busy}),
-          chosen.value.every(row => row.kind === 'torrent') && button('移除任务 · 保留文件', () => open('remove'), {danger: true, disabled: expired.value || acting.value || data.value.busy}),
-          chosen.value.every(row => row.kind === 'file') && button('移入回收区', () => open('quarantine'), {disabled: expired.value || acting.value || data.value.busy}),
+          chosen.value.every(row => row.kind === 'torrent') && button('标记任务', () => open('tag'), {disabled: actionBlocked.value}),
+          chosen.value.every(row => row.kind === 'torrent') && button('移除任务 · 保留文件', () => open('remove'), {danger: true, disabled: actionBlocked.value}),
+          chosen.value.every(row => row.kind === 'file') && button('移入回收区', () => open('quarantine'), {disabled: actionBlocked.value}),
           new Set(chosen.value.map(r => r.kind)).size > 1 && h('span', '请分别选择种子任务或源文件')]),
       ];
       return () => h('div', {class: 'cis-root'}, [header('做种复核', '每一项清理，都有可检查的依据', [
-        button('刷新', () => load(), {disabled: loading.value, icon: 'refresh'}), button(data.value?.busy ? '检测中…' : '只读检测', scan, {primary: true, disabled: acting.value || data.value?.busy, icon: 'search'}),
+        button('刷新结果', () => load(), {disabled: loading.value, icon: 'refresh'}), button(data.value?.busy ? '检测中…' : '只读检测', scan, {primary: true, disabled: acting.value || data.value?.busy, icon: 'search'}),
         button('设置', () => emit('switch'), {icon: 'settings'}), button('关闭', () => emit('close'), {icon: 'close'})]),
         error.value && h('div', {class: 'cis-alert cis-alert-error', role: 'alert'}, error.value),
         notice.value && h('div', {class: 'cis-alert', role: 'status'}, notice.value),
@@ -147,7 +168,7 @@ export function createPage(Vue) {
           h('p', dialog.value === 'remove' ? '仅移除下载器任务，保留下载文件。恢复做种需要重新添加种子。' : dialog.value === 'quarantine' ? '源文件移动到各源目录内的隐藏回收区，可从本页恢复；不会释放磁盘空间。' : '追加标记标签，保留原有标签与任务。'),
           h('ul', {class: 'cis-confirm-items'}, chosen.value.map(row => h('li', row.name))),
           h('label', {class: 'cis-field'}, [h('span', `请输入「${ACTION[dialog.value]}」确认`), h('input', {autofocus: true, value: confirmation.value, onInput: e => {confirmation.value = e.target.value;}, 'aria-label': '确认文字'})]),
-          h('div', {class: 'cis-actions'}, [button('取消', () => {dialog.value = '';}, {disabled: acting.value}), button(acting.value ? '正在复核…' : '确认执行', execute, {danger: true, disabled: acting.value || confirmation.value !== ACTION[dialog.value]})])])]),
+          h('div', {class: 'cis-actions'}, [button('取消', () => {dialog.value = '';}, {disabled: acting.value}), button(acting.value ? '正在复核…' : '确认执行', execute, {danger: true, disabled: actionBlocked.value || confirmation.value !== ACTION[dialog.value]})])])]),
       ]);
     },
   });
