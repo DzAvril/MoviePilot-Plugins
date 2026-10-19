@@ -561,110 +561,457 @@ class RemoveLink(_PluginBase):
     def get_api(self) -> List[Dict[str, Any]]:
         pass
 
+    def get_render_mode(self):
+        return "vue", "dist/assets"
+
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
-        # Keep the native form and its configuration keys compatible with existing installs.
-        def text(value, classes="text-body-2 text-medium-emphasis"):
-            return {"component": "div", "props": {"class": classes}, "text": value}
-
-        def row(*columns):
-            return {"component": "VRow", "props": {"class": "ma-n2"}, "content": list(columns)}
-
-        def column(*content, md=12):
-            return {"component": "VCol", "props": {"cols": 12, "md": md, "class": "pa-2"}, "content": list(content)}
-
-        def switch(model, label, hint, md=6):
-            return column(
-                {"component": "VSwitch", "props": {"model": model, "label": label, "color": "primary",
-                 "inset": True, "hide-details": True, "density": "comfortable"}},
-                text(hint, "text-caption text-medium-emphasis mb-2"), md=md,
-            )
-
-        def field(model, label, hint, **props):
-            return {"component": "VTextField", "props": {"model": model, "label": label, "hint": hint,
-                    "variant": "outlined", "density": "comfortable", "persistent-hint": True, **props}}
-
-        def area(model, label, hint, placeholder, rows=3):
-            item = field(model, label, hint, placeholder=placeholder, rows=rows,
-                         **{"auto-grow": True, "max-rows": 8})
-            item["component"] = "VTextarea"
-            return item
-
-        def details(title, subtitle, content):
-            return {"component": "VExpansionPanels", "props": {"variant": "accordion", "class": "mt-4"}, "content": [
-                {"component": "VExpansionPanel", "props": {"elevation": 0, "rounded": "lg",
-                 "style": "border:1px solid rgba(var(--v-theme-on-surface),.12);background:transparent"}, "content": [
-                    {"component": "VExpansionPanelTitle", "props": {"class": "px-4 py-3"}, "content": [
-                        {"component": "div", "content": [text(title, "text-subtitle-2"),
-                         text(subtitle, "text-caption text-medium-emphasis mt-1")]},
-                    ]},
-                    {"component": "VExpansionPanelText", "content": content},
-                ]},
-            ]}
-
-        def section(number, title, subtitle, content):
-            return {"component": "VCard", "props": {"variant": "outlined", "rounded": "xl", "class": "mb-4",
-                    "style": "border-color:rgba(var(--v-theme-on-surface),.12)"}, "content": [
-                {"component": "VCardText", "props": {"class": "pa-4 pa-sm-5"}, "content": [
-                    {"component": "div", "props": {"class": "d-flex align-start mb-4", "style": "gap:12px"}, "content": [
-                        {"component": "VChip", "props": {"color": "primary", "variant": "tonal", "size": "small", "label": True}, "text": number},
-                        {"component": "div", "props": {"style": "min-width:0"}, "content": [
-                            text(title, "text-subtitle-1 font-weight-bold"),
-                            text(subtitle, "text-caption text-medium-emphasis mt-1"),
-                        ]},
-                    ]},
-                    *content,
-                ]},
-            ]}
-
-        return [{"component": "VForm", "content": [
-            {"component": "VSheet", "props": {"rounded": "xl", "class": "pa-4 pa-sm-5 mb-4",
-             "style": "background:linear-gradient(120deg,rgba(var(--v-theme-primary),.10),rgba(var(--v-theme-primary),.02));border:1px solid rgba(var(--v-theme-primary),.12)"}, "content": [
-                text("媒体清理", "text-h6 font-weight-bold"),
-                text("集中配置目录监控、硬链接与 STRM 删除联动。", "text-body-2 text-medium-emphasis mt-1"),
-            ]},
-            section("01", "运行设置", "控制目录监控、结果通知与关联内容清理。", [
-                row(
-                    switch("enabled", "启用插件", "保存后按下方规则监听文件删除事件。"),
-                    switch("notify", "发送通知", "联动清理完成后发送处理结果。"),
-                ),
-                details("联动清理选项", "刮削文件、整理记录与下载器任务", [
-                    row(
-                        switch("delete_scrap_infos", "清理刮削文件", "同时删除对应的元数据、图片、字幕及预览目录。"),
-                        switch("delete_history", "删除转移记录", "同时删除对应的 MoviePilot 整理记录。"),
-                        switch("delete_torrents", "联动删除种子", "需安装「下载器助手」并启用监听源文件事件。", md=12),
-                    ),
-                    area("custom_scrap_extensions", "额外清理的文件后缀",
-                         "仅在清理刮削文件开启时生效；与内置 .nfo、.jpg、.srt 等后缀合并。",
-                         ".txt\n.json\n-mediainfo.json"),
-                ]),
-            ]),
-            section("02", "硬链接规则", "监控源目录与媒体库目录，联动处理指向同一文件的硬链接。", [
-                area("monitor_dirs", "监控目录", "源文件目录与硬链接目录都需要填写；每行一个绝对路径。",
-                     "/downloads\n/media/movies\n/media/tv", rows=4),
-                {"component": "div", "props": {"class": "mt-5"}, "content": [row(
-                    switch("delayed_deletion", "延迟复核后清理", "等待后再次确认文件已删除，减少重新整理时的误清理。"),
-                    column(field("delay_seconds", "等待时间（秒）", "允许 10 秒至 24 小时，默认 30 秒。",
-                                 type="number", min=10, max=86400, step=1, placeholder="30"), md=6),
-                )]},
-                details("保护与排除", "保留指定目录或名称匹配的文件", [row(
-                    column(area("exclude_dirs", "受保护目录",
-                                "目录内文件不会被联动删除；要保留源文件，可将源目录填在这里。",
-                                "每行一个目录"), md=6),
-                    column(area("exclude_keywords", "排除名称关键词", "每行一个关键词，匹配的文件保留。",
-                                "每行一个关键词"), md=6),
-                )]),
-            ]),
-            section("03", "STRM 联动", "删除本地 STRM 文件时，同步删除映射存储中的对应视频。", [
-                row(switch("monitor_strm_deletion", "启用 STRM 文件监控", "监控目录自动取自下方映射；与硬链接规则分别配置。", md=12)),
-                details("路径映射与存储", "配置 STRM 目录与视频存储的位置关系", [
-                    area("strm_path_mappings", "STRM 路径映射", "每行：STRM目录:存储类型:视频目录。",
-                         "/ssd/strm:u115:/media\n/nas/strm:alipan:/阿里云盘/媒体", rows=3),
-                    text("示例：/ssd/strm:u115:/media，将 /ssd/strm/test.strm 对应到 115 中以 /media/test 为前缀的视频文件。",
-                         "text-caption text-medium-emphasis mt-3"),
-                    text("支持 local、alipan、u115、rclone、alist。", "text-caption text-medium-emphasis mt-2"),
-                ]),
-            ]),
-        ]}], {
+        return [
+            {
+                "component": "VForm",
+                "content": [
+                    # 插件总体说明
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VAlert",
+                                        "props": {
+                                            "type": "info",
+                                            "variant": "tonal",
+                                            "title": "🧹 媒体文件清理插件",
+                                            "text": "全面的媒体文件清理工具，支持硬链接文件清理和STRM文件清理两种模式，可独立启用。硬链接清理用于监控硬链接文件删除并自动清理相关文件；STRM清理用于监控STRM文件删除并删除对应的网盘文件。同时支持刮削文件清理（元数据、图片、字幕）、转移记录清理、种子联动删除等功能。",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    # 公用配置
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "enabled",
+                                            "label": "启用插件",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "notify",
+                                            "label": "发送通知",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "delete_scrap_infos",
+                                            "label": "清理刮削文件",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "delete_torrents",
+                                            "label": "联动删除种子",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "delete_history",
+                                            "label": "删除转移记录",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    # 硬链接清理配置分隔线
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VDivider",
+                                        "props": {"style": "margin: 20px 0;"},
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    # 硬链接清理配置标题
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VAlert",
+                                        "props": {
+                                            "type": "primary",
+                                            "variant": "tonal",
+                                            "title": "🔗 硬链接清理配置",
+                                            "text": "监控硬链接文件删除，自动清理相关的硬链接文件、刮削文件和转移记录。",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    # 硬链接延迟删除配置
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "delayed_deletion",
+                                            "label": "启用延迟删除",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "delay_seconds",
+                                            "label": "延迟时间(秒)",
+                                            "type": "number",
+                                            "min": 10,
+                                            "max": 86400,
+                                            "placeholder": "30",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    # 硬链接监控目录配置
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VTextarea",
+                                        "props": {
+                                            "model": "monitor_dirs",
+                                            "label": "硬链接监控目录",
+                                            "rows": 5,
+                                            "placeholder": "硬链接源目录及目标目录均需加入监控，每一行一个目录",
+                                        },
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    # 硬链接排除配置
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VTextarea",
+                                        "props": {
+                                            "model": "exclude_dirs",
+                                            "label": "不删除目录",
+                                            "rows": 3,
+                                            "placeholder": "该目录下的文件不会被动删除，一行一个目录",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VTextarea",
+                                        "props": {
+                                            "model": "exclude_keywords",
+                                            "label": "排除关键词",
+                                            "rows": 3,
+                                            "placeholder": "每一行一个关键词",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    # 硬链接配置说明
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VTextarea",
+                                        "props": {
+                                            "model": "custom_scrap_extensions",
+                                            "label": "自定义刮削文件后缀",
+                                            "rows": 3,
+                                            "placeholder": "每行或逗号分隔一个后缀，例如：.txt\n.json\n-mediainfo.json",
+                                            "hint": "开启清理刮削文件后生效，会与内置 .nfo/.jpg/.srt 等后缀一起联动清理",
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    # 硬链接配置说明
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VAlert",
+                                        "props": {
+                                            "type": "warning",
+                                            "variant": "tonal",
+                                            "text": "延迟删除功能：启用后，文件删除时不会立即删除硬链接，而是等待指定时间后再检查文件是否仍被删除。这可以防止媒体重整理导致的意外删除。",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VAlert",
+                                        "props": {
+                                            "type": "info",
+                                            "variant": "tonal",
+                                            "text": "硬链接监控：源目录和硬链接目录都需要添加到监控目录中；如需实现删除硬链接时不删除源文件，可把源文件目录配置到不删除目录中。",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    # STRM清理配置分隔线
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VDivider",
+                                        "props": {"style": "margin: 20px 0;"},
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    # STRM清理配置标题
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VAlert",
+                                        "props": {
+                                            "type": "success",
+                                            "variant": "tonal",
+                                            "title": "📺 STRM文件清理配置",
+                                            "text": "监控STRM文件删除，自动删除网盘上对应的视频文件。监控目录会自动从路径映射中获取。",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    # STRM功能开关
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "monitor_strm_deletion",
+                                            "label": "启用STRM文件监控",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    # STRM路径映射配置
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VTextarea",
+                                        "props": {
+                                            "model": "strm_path_mappings",
+                                            "label": "STRM路径映射",
+                                            "rows": 4,
+                                            "placeholder": "STRM目录:存储类型:网盘目录，每行一个映射关系\n例如：/ssd/strm:u115:/media\n例如：/nas/strm:alipan:/阿里云盘/媒体",
+                                        },
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    # STRM配置说明
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VAlert",
+                                        "props": {
+                                            "type": "info",
+                                            "variant": "tonal",
+                                            "text": "STRM文件监控：启用后会自动监控映射中的STRM目录，当STRM文件删除时会查找并删除网盘上对应的视频文件。路径映射格式：STRM目录:存储类型:网盘目录，例如 /ssd/strm:u115:/media 表示 /ssd/strm/test.strm 对应115网盘中以 /media/test 为前缀的视频文件。",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VAlert",
+                                        "props": {
+                                            "type": "success",
+                                            "variant": "tonal",
+                                            "text": "支持的存储类型：local（本地存储）、alipan（阿里云盘）、u115（115网盘）、rclone（Rclone挂载）、alist（Alist挂载）。",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    # 公用功能说明
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VDivider",
+                                        "props": {"style": "margin: 20px 0;"},
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VAlert",
+                                        "props": {
+                                            "type": "warning",
+                                            "variant": "tonal",
+                                            "text": "联动删除种子需安装插件[下载器助手]并打开监听源文件事件。清理刮削文件功能会删除相关的.nfo、.jpg等元数据文件，请谨慎开启。",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            }
+        ], {
             "enabled": False,
             "notify": False,
             "delete_scrap_infos": False,
@@ -679,7 +1026,6 @@ class RemoveLink(_PluginBase):
             "monitor_strm_deletion": False,
             "strm_path_mappings": "",
         }
-
 
     def get_page(self) -> List[dict]:
         pass

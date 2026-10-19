@@ -31,6 +31,7 @@ class SettingsCompatibility(unittest.TestCase):
         self.plugin = module.RemoveLink()
 
     def test_existing_keys_defaults_and_field_bindings_are_preserved(self):
+        self.assertEqual(self.plugin.get_render_mode(), ("vue", "dist/assets"))
         form, defaults = self.plugin.get_form()
         self.assertEqual(defaults, LEGACY_DEFAULTS)
         fields = [n for n in nodes(form) if "model" in n.get("props", {})]
