@@ -44,7 +44,7 @@ class ZvideoHelper(_PluginBase):
     # 插件图标
     plugin_icon = "zvideo.png"
     # 插件版本
-    plugin_version = "2.0.0"
+    plugin_version = "2.0.1"
     # 插件作者
     plugin_author = "DzAvril"
     # 作者主页
@@ -428,6 +428,7 @@ class ZvideoHelper(_PluginBase):
 
     def set_douban_watching(self):
         watching_douban_id = []
+        conn = cursor = None
         try:
             conn = sqlite3.connect(self._db_path)
             cursor = conn.cursor()
@@ -484,30 +485,11 @@ class ZvideoHelper(_PluginBase):
                 cursor.close()
             if conn:
                 conn.close()
-            message = ""
-            for item in watching_douban_id:
-                status = DoubanStatus.WATCHING.value
-                ret = self._douban_helper.set_watching_status(
-                    subject_id=item[1], status=status, private=True
-                )
-                if ret:
-                    self._cached_data[item[0]] = status
-                    logger.info(f"title: {item[0]}, douban_id: {item[1]}，已标记为在看")
-                    message += f"{item[0]}，已标记为在看\n"
-                else:
-                    logger.error(
-                        f"title: {item[0]}, douban_id: {item[1]}，标记在看失败"
-                    )
-                    message += f"{item[0]}，***标记在看失败***\n"
-            if self._notify and len(message) > 0:
-                self.post_message(
-                    mtype=NotificationType.SiteMessage,
-                    title="【极影视助手】",
-                    text=message,
-                )
+            self._submit_douban_statuses(watching_douban_id, DoubanStatus.WATCHING.value, "在看")
 
     def set_douban_done(self):
         watching_douban_id = []
+        conn = cursor = None
         try:
             conn = sqlite3.connect(self._db_path)
             cursor = conn.cursor()
@@ -566,27 +548,45 @@ class ZvideoHelper(_PluginBase):
                 cursor.close()
             if conn:
                 conn.close()
-            message = ""
-            for item in watching_douban_id:
-                status = DoubanStatus.DONE.value
+            self._submit_douban_statuses(watching_douban_id, DoubanStatus.DONE.value, "已看")
+
+    def _notify_douban_auth_failure(self):
+        if getattr(self, "_douban_auth_notified", False):
+            return
+        self._douban_auth_notified = True
+        text = "豆瓣认证失败，已停止本轮状态同步。请重新登录豆瓣并同步CookieCloud/更新插件Cookie。"
+        logger.error(text)
+        if self._notify:
+            self.post_message(mtype=NotificationType.SiteMessage, title="【极影视助手】", text=text)
+
+    def _submit_douban_statuses(self, items, status, label):
+        message = ""
+        for title, douban_id in items:
+            if self._should_stop:
+                break
+            if not self._douban_helper.is_ready():
+                self._notify_douban_auth_failure()
+                break
+            try:
                 ret = self._douban_helper.set_watching_status(
-                    subject_id=item[1], status=status, private=True
-                )
-                if ret:
-                    self._cached_data[item[0]] = status
-                    logger.info(f"title: {item[0]}, douban_id: {item[1]},已标记为已看")
-                    message += f"{item[0]}，已标记为已看\n"
-                else:
-                    logger.error(
-                        f"title: {item[0]}, douban_id: {item[1]}, 标记已看失败"
-                    )
-                    message += f"{item[0]}，***标记已看失败***\n"
-            if self._notify and len(message) > 0:
-                self.post_message(
-                    mtype=NotificationType.SiteMessage,
-                    title="【极影视助手】",
-                    text=message,
-                )
+                    subject_id=douban_id, status=status, private=True)
+            except Exception:
+                # Isolate an individual malformed entry; never log credentials
+                # embedded in a provider exception or prevent later valid items.
+                logger.error(f"豆瓣状态提交异常：douban_id={douban_id}")
+                ret = False
+            if ret is True:
+                self._cached_data[title] = status
+                logger.info(f"title: {title}, douban_id: {douban_id}，已标记为{label}")
+                message += f"{title}，已标记为{label}\n"
+            elif not self._douban_helper.is_ready():
+                self._notify_douban_auth_failure()
+                break
+            else:
+                logger.error(f"title: {title}, douban_id: {douban_id}，标记{label}失败")
+                message += f"{title}，***标记{label}失败***\n"
+        if self._notify and message:
+            self.post_message(mtype=NotificationType.SiteMessage, title="【极影视助手】", text=message)
 
     def get_douban_info_by_name(self, title):
         logger.info(f"正在查询：{title}")
@@ -752,8 +752,17 @@ class ZvideoHelper(_PluginBase):
         logger.info("更新极影视为tmdb评分...")
 
     def sync_douban_status(self):
+        self._douban_auth_notified = False
+        if self._douban_helper is None:
+            self._douban_helper = DoubanHelper(user_cookie=self._cookie)
+        else:
+            self._douban_helper.refresh_auth(user_cookie=self._cookie)
+        if not self._douban_helper.is_ready():
+            self._notify_douban_auth_failure()
+            return
         self.set_douban_watching()
-        self.set_douban_done()
+        if self._douban_helper.is_ready():
+            self.set_douban_done()
         # 缓存数据
         self.save_data("zvideohelper", self._cached_data)
 
