@@ -49,6 +49,21 @@
     "release": true,
     "labels": "下载管理,清理,做种"
   },
+  "StrmMirror": {
+    "name": "115 STRM 副库",
+    "description": "监听 115 STRM 新增与更新，将影片目录和附属文件同步到独立副库。",
+    "version": "1.1.0",
+    "author": "DzAvril",
+    "level": 1,
+    "system_version": ">=3.1.6,<4",
+    "icon": "Ombi_A.png",
+    "release": true,
+    "labels": "STRM,115,媒体库",
+    "history": {
+      "v1.1.0": "使用文件系统事件实时监听，按影片或剧集同步整个目录及附属文件。",
+      "v1.0.0": "定时扫描 115 STRM，按目录层级生成和更新第二套播放入口。"
+    }
+  },
   "ZvideoHelper": {
     "name": "极影视助手",
     "description": "定时补全中文字幕、网页授权、手动字幕搜索下载与豆瓣同步",
